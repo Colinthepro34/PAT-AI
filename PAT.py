@@ -199,6 +199,7 @@ def run_action(action: str, text: str, df: pd.DataFrame) -> Dict[str, Any]:
 st.set_page_config(page_title='PAT', layout='wide')
 
 # Global CSS
+# Global CSS for a ChatGPT-style input area
 st.markdown("""
 <style>
 body {
@@ -206,11 +207,62 @@ body {
     background-color: #0f172a;
     color: white;
 }
+
 /* Sidebar */
 [data-testid="stSidebar"] {
     background-color: #1e293b;
     color: white;
 }
+
+/* Ensure sidebar text stays white */
+[data-testid="stSidebar"] .stSidebar-header, 
+[data-testid="stSidebar"] .stSidebar-content, 
+[data-testid="stSidebar"] .stText, 
+[data-testid="stSidebar"] .stMarkdown {
+    color: white !important;
+}
+
+/* Custom styling for the file uploader button */
+[data-testid="stFileUploader"] button {
+    background-color: #e11d48 !important;
+    color: white !important;
+    border: none !important;
+    padding: 10px 20px !important;
+    border-radius: 5px !important;
+    font-size: 16px !important;
+}
+
+/* Chat input area (like ChatGPT) */
+div[data-testid="stChatInput"] div[role="textbox"],
+div[data-testid="stTextArea"] textarea,
+textarea[aria-label="Chat input"],
+div[role="textbox"] {
+    font-size: 18px !important;
+    line-height: 1.4 !important;
+    padding: 12px 20px !important;
+    background-color: #2a3747 !important;  /* Dark background */
+    color: white !important;  /* White text */
+    border: 2px solid #4b6b8d !important;  /* Subtle border */
+    border-radius: 20px !important;  /* Rounded corners */
+    width: 100% !important;
+    box-sizing: border-box;
+    min-height: 80px !important;
+    max-height: 180px !important;
+    resize: none !important;
+}
+
+/* Focus effect */
+div[data-testid="stChatInput"] div[role="textbox"]:focus {
+    outline: none !important;
+    border: 2px solid #2563eb !important;  /* Blue outline on focus */
+}
+
+/* Placeholder text style */
+div[data-testid="stChatInput"] div[role="textbox"]::placeholder {
+    color: #a0aec0 !important;  /* Light gray */
+    opacity: 1 !important;
+}
+
 /* Chat bubbles */
 .stChatMessage {
     border-radius: 12px;
@@ -225,18 +277,7 @@ body {
     background-color: #334155;
     color: white;
 }
-/* Chat input box */
-div[data-testid="stChatInput"] div[role="textbox"],
-div[data-testid="stTextArea"] textarea,
-textarea[aria-label="Chat input"],
-div[role="textbox"] {
-    min-height: 80px !important;
-    max-height: 240px !important;
-    font-size: 16px !important;
-    padding: 12px !important;
-    border-radius: 10px !important;
-    line-height: 1.3 !important;
-}
+
 /* Send button */
 button[data-testid="stChatSendButton"],
 button[aria-label="Send"],
@@ -246,7 +287,6 @@ button[title="Send"] {
 }
 </style>
 """, unsafe_allow_html=True)
-
 
 # ---------------------- Sidebar ----------------------
 with st.sidebar:
@@ -276,7 +316,7 @@ with chat_col:
     if not st.session_state["chat_started"]:
         st.markdown("## 👋 Hi, I'm **PAT**, your Data Analyst.")
         st.markdown("I can refine your data, analyze it, and create visuals.")
-        st.image("ChatGPT Image Aug 18, 2025, 07_38_23 AM.png", width=600)
+        st.image("/workspaces/PAT-AI/Made with insMind-IMG_20250915_063635 (1).png", width=600)
     else:
         for msg in st.session_state['chat_history']:
             if msg['role'] == 'user':
