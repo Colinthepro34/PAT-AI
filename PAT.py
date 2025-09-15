@@ -38,6 +38,9 @@ ACTION_MAP = {
     'scatter': ['scatter', 'scatter plot'],
     'count': ['count', 'value counts'],
     'corr': ['correlation', 'corr', 'correlations'],
+    "rows": ["rows", "number of rows", "row count"],
+    "columns": ["columns", "number of columns", "col count"],
+    "dtypes": ["data types", "dtypes", "types", "column types"]
 }
 
 INVERSE_ACTION = {}
@@ -46,15 +49,20 @@ for k, vs in ACTION_MAP.items():
         INVERSE_ACTION[v] = k
 
 
-def detect_action(text: str) -> Optional[str]:
+def detect_actions(text: str) -> List[str]:
+    """Return list of actions detected in user text."""
     text_low = text.lower()
+    actions = []
+
     for phrase, action in INVERSE_ACTION.items():
-        if phrase in text_low:
-            return action
+        if phrase in text_low and action not in actions:
+            actions.append(action)
+
     for k in ACTION_MAP.keys():
-        if k in text_low:
-            return k
-    return None
+        if k in text_low and k not in actions:
+            actions.append(k)
+
+    return actions
 
 
 def extract_column_names(text: str, df: pd.DataFrame) -> List[str]:
@@ -72,7 +80,11 @@ def extract_column_names(text: str, df: pd.DataFrame) -> List[str]:
     if m:
         for token in m:
             for col in cols:
-                if token.lower() == col.lower() or token.lower() in col.lower() or col.lower() in token.lower():
+                if (
+                    token.lower() == col.lower()
+                    or token.lower() in col.lower()
+                    or col.lower() in token.lower()
+                ):
                     found.append(col)
     return list(dict.fromkeys(found))
 
@@ -80,20 +92,31 @@ def extract_column_names(text: str, df: pd.DataFrame) -> List[str]:
 # ---------------------- Action Execution ----------------------
 def run_action(action: str, text: str, df: pd.DataFrame) -> Dict[str, Any]:
     if df is None:
-        return {'type': 'text', 'content': 'No dataset loaded. Please upload a CSV or Excel file first.'}
+        return {
+            "type": "text",
+            "content": "No dataset loaded. Please upload a CSV or Excel file first.",
+        }
 
     cols = extract_column_names(text, df)
 
     try:
-        if action == 'mean':
-            if cols:
-                res = {c: float(df[c].dropna().mean()) for c in cols}
-                return {'type': 'text', 'content': f"Mean:\n{res}"}
-            else:
-                numeric = df.select_dtypes(include=[np.number])
-                res = numeric.mean().to_dict()
-                return {'type': 'table', 'content': pd.DataFrame(res, index=['mean']).T}
+        if action == "rows":
+           res = f"The dataset has **{df.shape[0]} rows**."
+           return {"type": "text", "content": res}
 
+        if action == "columns":
+            res = f"The dataset has **{df.shape[1]} columns**."
+            return {"type": "text", "content": res}
+
+        if action == "dtypes":
+            res = df.dtypes.to_frame("dtype")
+            return {"type": "table", "content": res}
+
+        if action == 'mean':
+            numeric = df.select_dtypes(include=[np.number])
+            res = numeric.mean().to_frame("mean")
+            return {'type': 'table', 'content': res}
+        
         if action == 'median':
             if cols:
                 res = {c: float(df[c].dropna().median()) for c in cols}
@@ -194,6 +217,13 @@ def run_action(action: str, text: str, df: pd.DataFrame) -> Dict[str, Any]:
     except Exception as e:
         return {'type': 'text', 'content': f'Error: {e}'}
 
+def run_actions(actions: List[str], text: str, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    """Run multiple detected actions in order and return list of results."""
+    results = []
+    for action in actions:
+        result = run_action(action, text, df)
+        results.append(result)
+    return results
 
 # ---------------------- Streamlit UI ----------------------
 st.set_page_config(page_title='PAT', layout='wide')
@@ -337,14 +367,15 @@ with chat_col:
     user_input = st.chat_input("Ask me to analyze your data...")
     if user_input:
         st.session_state["chat_started"] = True
-        st.session_state['chat_history'].append({'role': 'user', 'content': user_input})
-        action = detect_action(user_input)
-        result = run_action(action, user_input, st.session_state['df'])
-        st.session_state['chat_history'].append({
-            'role': 'assistant',
-            'type': result['type'],
-            'content': result['content']
-        })
+        st.session_state["chat_history"].append(
+            {"role": "user", "content": user_input}
+        )
+        actions = detect_actions(user_input)
+        results = run_actions(actions, user_input, st.session_state["df"])
+        for result in results:
+            st.session_state["chat_history"].append(
+                {"role": "assistant", "type": result["type"], "content": result["content"]}
+            )
         st.rerun()
 
 
