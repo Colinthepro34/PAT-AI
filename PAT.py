@@ -34,7 +34,7 @@ ACTION_MAP = {
     'dropna': ['dropna', 'drop na', 'drop missing', 'remove missing'],
     'fillna': ['fillna', 'fill missing', 'impute'],
     'histogram': ['histogram', 'hist', 'distribution'],
-    'bar': ['bar chart', 'bar'],
+    'barchart': ['bar chart','bar'],
     'scatter': ['scatter', 'scatter plot'],
     'count': ['count', 'value counts'],
     'corr': ['correlation', 'corr', 'correlations'],
