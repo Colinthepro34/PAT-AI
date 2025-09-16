@@ -40,7 +40,8 @@ ACTION_MAP = {
     'corr': ['correlation', 'corr', 'correlations'],
     "rows": ["rows", "number of rows", "row count"],
     "columns": ["columns", "number of columns", "col count"],
-    "dtypes": ["data types", "dtypes", "types", "column types"]
+    "dtypes": ["data types", "dtypes", "types", "column types"],
+    "data_quality": ["data quality", "check quality", "missing values", "duplicates", "outliers", "clean data"]
 }
 
 INVERSE_ACTION = {}
@@ -90,118 +91,150 @@ def extract_column_names(text: str, df: pd.DataFrame) -> List[str]:
 
 
 # ---------------------- Action Execution ----------------------
-def run_action(action: str, text: str, df: pd.DataFrame) -> Dict[str, Any]:
+# ---------------------- Action Execution ----------------------
+def run_action(action: str, text: str, df: pd.DataFrame) -> List[Dict[str, Any]]:
     if df is None:
-        return {
+        return [{
             "type": "text",
             "content": "No dataset loaded. Please upload a CSV or Excel file first.",
-        }
+        }]
 
+    results: List[Dict[str, Any]] = []
     cols = extract_column_names(text, df)
 
     try:
-        if action == "rows":
-           res = f"The dataset has **{df.shape[0]} rows**."
-           return {"type": "text", "content": res}
+        if action == "data_quality":
+            issues = []
 
-        if action == "columns":
-            res = f"The dataset has **{df.shape[1]} columns**."
-            return {"type": "text", "content": res}
+            # Missing values
+            missing = df.isnull().sum()
+            missing = missing[missing > 0]
+            if not missing.empty:
+                issues.append(f"⚠️ Missing values found:\n{missing.to_dict()}")
 
-        if action == "dtypes":
-            res = df.dtypes.to_frame("dtype")
-            return {"type": "table", "content": res}
+            # Duplicates
+            dup_count = df.duplicated().sum()
+            if dup_count > 0:
+                issues.append(f"⚠️ Found {dup_count} duplicate rows")
 
-        if action == 'mean':
+            # Outliers (Z-score > 3)
             numeric = df.select_dtypes(include=[np.number])
-            res = numeric.mean().to_frame("mean")
-            return {'type': 'table', 'content': res}
-        
-        if action == 'median':
+            outlier_info = {}
+            for col in numeric.columns:
+                z_scores = np.abs((numeric[col] - numeric[col].mean()) / numeric[col].std())
+                outlier_count = (z_scores > 3).sum()
+                if outlier_count > 0:
+                    outlier_info[col] = int(outlier_count)
+            if outlier_info:
+                issues.append(f"⚠️ Outliers detected:\n{outlier_info}")
+
+            if not issues:
+                results.append({"type": "text", "content": "✅ No missing values, duplicates, or outliers found."})
+            else:
+                results.append({
+                    "type": "data_quality",
+                    "content": {
+                        "missing": missing.to_dict(),
+                        "duplicates": int(dup_count),
+                        "outliers": outlier_info
+                    }
+                })
+
+        elif action == "rows":
+            results.append({"type": "text", "content": f"The dataset has **{df.shape[0]} rows**."})
+
+        elif action == "columns":
+            results.append({"type": "text", "content": f"The dataset has **{df.shape[1]} columns**."})
+
+        elif action == "dtypes":
+            results.append({"type": "table", "content": df.dtypes.to_frame("dtype")})
+
+        elif action == "mean":
+            numeric = df.select_dtypes(include=[np.number])
+            results.append({"type": "table", "content": numeric.mean().to_frame("mean")})
+
+        elif action == "median":
             if cols:
                 res = {c: float(df[c].dropna().median()) for c in cols}
-                return {'type': 'text', 'content': f"Median:\n{res}"}
+                results.append({"type": "text", "content": f"Median:\n{res}"})
             else:
                 numeric = df.select_dtypes(include=[np.number])
-                res = numeric.median().to_dict()
-                return {'type': 'table', 'content': pd.DataFrame(res, index=['median']).T}
+                results.append({"type": "table", "content": pd.DataFrame(numeric.median().to_dict(), index=["median"]).T})
 
-        if action == 'mode':
+        elif action == "mode":
             if cols:
                 res = {c: df[c].mode().tolist() for c in cols}
-                return {'type': 'text', 'content': f"Mode:\n{res}"}
+                results.append({"type": "text", "content": f"Mode:\n{res}"})
             else:
-                return {'type': 'text', 'content': 'Please specify a column for mode.'}
+                results.append({"type": "text", "content": "Please specify a column for mode."})
 
-        if action == 'describe':
-            return {'type': 'table', 'content': df.describe(include='all')}
+        elif action == "describe":
+            results.append({"type": "table", "content": df.describe(include="all")})
 
-        if action == 'head':
+        elif action == "head":
             n = 5
             m = re.search(r"head\s*(\d+)", text.lower())
-            if m:
-                n = int(m.group(1))
-            return {'type': 'table', 'content': df.head(n)}
+            if m: n = int(m.group(1))
+            results.append({"type": "table", "content": df.head(n)})
 
-        if action == 'tail':
+        elif action == "tail":
             n = 5
             m = re.search(r"tail\s*(\d+)", text.lower())
-            if m:
-                n = int(m.group(1))
-            return {'type': 'table', 'content': df.tail(n)}
+            if m: n = int(m.group(1))
+            results.append({"type": "table", "content": df.tail(n)})
 
-        if action == 'dropna':
+        elif action == "dropna":
             before = df.shape
             new_df = df.dropna()
-            st.session_state['df'] = new_df
+            st.session_state["df"] = new_df
             after = new_df.shape
-            return {'type': 'text', 'content': f'Dropped NA rows. Before: {before}, After: {after}'}
+            results.append({"type": "text", "content": f"Dropped NA rows. Before: {before}, After: {after}"})
 
-        if action == 'fillna':
-            imputer = SimpleImputer(strategy='mean')
+        elif action == "fillna":
+            imputer = SimpleImputer(strategy="mean")
             numeric_cols = df.select_dtypes(include=[np.number]).columns
             df[numeric_cols] = pd.DataFrame(imputer.fit_transform(df[numeric_cols]), columns=numeric_cols)
             for col in df.select_dtypes(exclude=[np.number]).columns:
-                df[col] = df[col].fillna(df[col].mode().iloc[0] if not df[col].mode().empty else '')
-            st.session_state['df'] = df
-            return {'type': 'text', 'content': 'Filled missing values: numeric -> mean, non-numeric -> mode.'}
+                df[col] = df[col].fillna(df[col].mode().iloc[0] if not df[col].mode().empty else "")
+            st.session_state["df"] = df
+            results.append({"type": "text", "content": "Filled missing values: numeric -> mean, non-numeric -> mode."})
 
-        if action in ('histogram', 'bar', 'scatter'):
-            if action == 'scatter':
-                cols = extract_column_names(text, df)
+        elif action in ("histogram", "bar", "scatter"):
+            if action == "scatter":
                 if len(cols) >= 2:
                     x, y = cols[0], cols[1]
-                    fig = px.scatter(df, x=x, y=y, title=f'Scatter: {x} vs {y}')
-                    return {'type': 'plotly', 'content': fig}
+                    fig = px.scatter(df, x=x, y=y, title=f"Scatter: {x} vs {y}")
+                    results.append({"type": "plotly", "content": fig})
                 else:
-                    return {'type': 'text', 'content': 'Scatter requires two columns.'}
-
-            if not cols:
-                return {'type': 'text', 'content': 'Please specify a column to plot.'}
-            col = cols[0]
-            if action == 'bar' or (df[col].dtype == object and action == 'histogram'):
-                counts = df[col].value_counts().reset_index()
-                counts.columns = [col, 'count']
-                fig = px.bar(counts, x=col, y='count', title=f'Bar: {col}')
-                return {'type': 'plotly', 'content': fig}
+                    results.append({"type": "text", "content": "Scatter requires two columns."})
             else:
-                if pd.api.types.is_numeric_dtype(df[col]):
-                    fig = px.histogram(df, x=col, title=f'Histogram: {col}')
-                    return {'type': 'plotly', 'content': fig}
+                if not cols:
+                    results.append({"type": "text", "content": "Please specify a column to plot."})
                 else:
-                    counts = df[col].value_counts().reset_index()
-                    counts.columns = [col, 'count']
-                    fig = px.bar(counts, x=col, y='count', title=f'Bar: {col}')
-                    return {'type': 'plotly', 'content': fig}
+                    col = cols[0]
+                    if action == "bar" or (df[col].dtype == object and action == "histogram"):
+                        counts = df[col].value_counts().reset_index()
+                        counts.columns = [col, "count"]
+                        fig = px.bar(counts, x=col, y="count", title=f"Bar: {col}")
+                        results.append({"type": "plotly", "content": fig})
+                    else:
+                        if pd.api.types.is_numeric_dtype(df[col]):
+                            fig = px.histogram(df, x=col, title=f"Histogram: {col}")
+                            results.append({"type": "plotly", "content": fig})
+                        else:
+                            counts = df[col].value_counts().reset_index()
+                            counts.columns = [col, "count"]
+                            fig = px.bar(counts, x=col, y="count", title=f"Bar: {col}")
+                            results.append({"type": "plotly", "content": fig})
 
-        if action == 'count':
+        elif action == "count":
             if cols:
                 res = {c: int(df[c].nunique()) for c in cols}
-                return {'type': 'text', 'content': f'Unique counts:\n{res}'}
+                results.append({"type": "text", "content": f"Unique counts:\n{res}"})
             else:
-                return {'type': 'text', 'content': 'Please specify columns to count unique values.'}
+                results.append({"type": "text", "content": "Please specify columns to count unique values."})
 
-        if action == 'corr':
+        elif action == "corr":
             corr = df.select_dtypes(include=[np.number]).corr()
             fig, ax = plt.subplots()
             cax = ax.matshow(corr)
@@ -210,20 +243,29 @@ def run_action(action: str, text: str, df: pd.DataFrame) -> Dict[str, Any]:
             ax.set_yticks(range(len(corr.columns)))
             ax.set_xticklabels(corr.columns, rotation=90)
             ax.set_yticklabels(corr.columns)
-            return {'type': 'matplotlib', 'content': fig}
+            results.append({"type": "matplotlib", "content": fig})
 
-        return {'type': 'text', 'content': 'Sorry — I did not understand the request.'}
+        else:
+            results.append({"type": "text", "content": "Sorry — I did not understand the request."})
 
     except Exception as e:
-        return {'type': 'text', 'content': f'Error: {e}'}
+        results.append({"type": "text", "content": f"Error: {e}"})
+
+    return results
+
 
 def run_actions(actions: List[str], text: str, df: pd.DataFrame) -> List[Dict[str, Any]]:
-    """Run multiple detected actions in order and return list of results."""
-    results = []
+    all_results: List[Dict[str, Any]] = []
     for action in actions:
-        result = run_action(action, text, df)
-        results.append(result)
-    return results
+        try:
+            action_results = run_action(action, text, df)
+            if isinstance(action_results, dict):
+                all_results.append(action_results)
+            elif isinstance(action_results, list):
+                all_results.extend(action_results)
+        except Exception as e:
+            all_results.append({"type": "text", "content": f"Error in {action}: {e}"})
+    return all_results
 
 # ---------------------- Streamlit UI ----------------------
 st.set_page_config(page_title='PAT', layout='wide')
@@ -361,9 +403,49 @@ with chat_col:
                         st.plotly_chart(msg['content'], use_container_width=True)
                     elif msg['type'] == 'matplotlib':
                         st.pyplot(msg['content'])
+                    elif msg['type'] == 'data_quality':
+                        issues = msg['content']
+                        st.markdown("### 🧹 Data Quality Report")
+
+                        # Missing values
+                        if issues["missing"]:
+                            st.markdown(f"⚠️ Missing values found: {issues['missing']}")
+                            if st.button("Remove Missing Values", key=f"remove-missing-{len(st.session_state['chat_history'])}"):
+                                st.session_state["df"] = st.session_state["df"].dropna()
+                                st.success("Removed missing values!")
+
+                        # Duplicates
+                        if issues["duplicates"] > 0:
+                            st.markdown(f"⚠️ Found {issues['duplicates']} duplicate rows")
+                            if st.button("Remove Duplicates", key=f"remove-duplicates-{len(st.session_state['chat_history'])}"):
+                                st.session_state["df"] = st.session_state["df"].drop_duplicates()
+                                st.success("Removed duplicates!")
+
+                        # Outliers
+                        if issues["outliers"]:
+                            st.markdown(f"⚠️ Outliers detected: {issues['outliers']}")
+                            if st.button("Remove Outliers", key=f"remove-outliers-{len(st.session_state['chat_history'])}"):
+                                cleaned = st.session_state["df"].copy()
+                                for col in issues["outliers"].keys():
+                                    z_scores = np.abs((cleaned[col] - cleaned[col].mean()) / cleaned[col].std())
+                                    cleaned = cleaned[z_scores <= 3]
+                                st.session_state["df"] = cleaned
+                                st.success("Removed outliers!")
+
+                        # Download cleaned dataset
+                        if st.session_state["df"] is not None:
+                            csv = st.session_state["df"].to_csv(index=False).encode("utf-8")
+                            st.download_button(
+                                "⬇️ Download Cleaned CSV",
+                                csv,
+                                "cleaned_dataset.csv",
+                                "text/csv",
+                                key=f"download-cleaned-{len(st.session_state['chat_history'])}",
+                            )
                     else:
                         st.write(msg.get('content'))
 
+    # Chat input always at the bottom
     user_input = st.chat_input("Ask me to analyze your data...")
     if user_input:
         st.session_state["chat_started"] = True
@@ -373,9 +455,9 @@ with chat_col:
         actions = detect_actions(user_input)
         results = run_actions(actions, user_input, st.session_state["df"])
         for result in results:
-            st.session_state["chat_history"].append(
-                {"role": "assistant", "type": result["type"], "content": result["content"]}
-            )
+         st.session_state["chat_history"].append(
+            {"role": "assistant", "type": result["type"], "content": result["content"]}
+         )
         st.rerun()
 
 
