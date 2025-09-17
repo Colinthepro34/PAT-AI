@@ -9,6 +9,7 @@ import io
 import os
 
 import streamlit as st
+import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import io
 import zipfile
@@ -41,7 +42,7 @@ ACTION_MAP = {
     'fillna': ['fillna', 'fill missing', 'impute'],
     'histogram': ['histogram', 'hist', 'distribution','Distribution of numerical variables '],
     'barchart': ['bar chart','bar','Frequency counts for categorical variables','Frequency counts for numerical variables'],
-    'heatmap': ['Correlation between numerical variables'],
+    'heatmap': ['Correlation between numerical variables','heatmap'],
     'scatter': ['scatter', 'scatter plot'],
     'count': ['count', 'value counts'],
     'corr': ['correlation', 'corr', 'correlations'],
@@ -49,7 +50,10 @@ ACTION_MAP = {
     "columns": ["columns", "number of columns", "col count"],
     "dtypes": ["data types", "dtypes", "types", "column types"],
     "data_quality": ["data quality", "check quality", "missing values", "duplicates", "outliers", "clean data"],
-    "feature_types": ["categorical","numerical"]
+    "feature_types": ["categorical","numerical"],
+    "target_relationships":["target","relationship"],
+    "categorical_counts":["categorical","count"],
+    "distribution":["distribution"]
 }
 
 INVERSE_ACTION = {}
@@ -97,472 +101,401 @@ def extract_column_names(text: str, df: pd.DataFrame) -> List[str]:
                     found.append(col)
     return list(dict.fromkeys(found))
 
+# ---------------------- Safe Export ----------------------
+def safe_export_fig(fig, filename: str, fmt: str = "png", scale: int = 2):
+    """
+    Safely export a Plotly figure. Falls back to HTML if Kaleido/system deps are missing.
+    """
+    try:
+        if fmt == "png":
+            return fig.to_image(format="png", scale=scale), filename
+        elif fmt == "html":
+            return fig.to_html(full_html=False, include_plotlyjs="cdn").encode("utf-8"), filename
+    except Exception:
+        # Fallback → export as HTML instead of PNG
+        html_name = filename.replace(".png", ".html")
+        return fig.to_html(full_html=False, include_plotlyjs="cdn").encode("utf-8"), html_name
 
-# ---------------------- Action Execution ----------------------
-def run_action(action: str, text: str, df: pd.DataFrame) -> List[Dict[str, Any]]:
+# ---------------------- Column extraction helper ----------------------
+def extract_column_names(text: str, df: pd.DataFrame) -> List[str]:
+    """Try to find explicit column names in text, or tokens after 'of'/'for'."""
     if df is None:
-        return [{
-            "type": "text",
-            "content": "No dataset loaded. Please upload a CSV or Excel file first.",
-        }]
+        return []
+    cols = list(df.columns.astype(str))
+    found = []
+    # exact column match (case-insensitive)
+    for col in cols:
+        pattern = re.compile(rf"\b{re.escape(col)}\b", flags=re.IGNORECASE)
+        if pattern.search(text):
+            found.append(col)
+    if found:
+        return list(dict.fromkeys(found))
+    # heuristic: tokens after "of" or "for"
+    m = re.findall(r"(?:of|for)\s+([A-Za-z0-9_\-]+)", text)
+    if m:
+        for token in m:
+            for col in cols:
+                if token.lower() == col.lower() or token.lower() in col.lower() or col.lower() in token.lower():
+                    found.append(col)
+    return list(dict.fromkeys(found))
+
+
+# ---------------------- Single action handler (always returns list of dicts) ----------------------
+def run_action(action: str, text: str, df: pd.DataFrame, cols: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """
+    Execute a single action and return list of result blocks.
+    Each block is a dict: {'type': 'text'|'table'|'plotly'|'matplotlib'|'data_quality'|'download', 'content': ...}
+    """
+    if df is None:
+        return [{"type": "text", "content": "No dataset loaded. Please upload a CSV or Excel file first."}]
 
     results: List[Dict[str, Any]] = []
-    cols = extract_column_names(text, df)
+    if cols is None:
+        cols = extract_column_names(text, df)
 
     try:
+        # ---------------- Data quality ----------------
         if action == "data_quality":
-            issues = []
-            
-            # Missing values
             missing = df.isnull().sum()
             missing = missing[missing > 0]
-            if not missing.empty:
-                issues.append(f"⚠️ Missing values found:\n{missing.to_dict()}")
-
-            # Duplicates
-            dup_count = df.duplicated().sum()
-            if dup_count > 0:
-                issues.append(f"⚠️ Found {dup_count} duplicate rows")
-
-            # Outliers (Z-score > 3)
+            dup_count = int(df.duplicated().sum())
             numeric = df.select_dtypes(include=[np.number])
             outlier_info = {}
-            for col in numeric.columns:
-                z_scores = np.abs((numeric[col] - numeric[col].mean()) / numeric[col].std())
-                outlier_count = (z_scores > 3).sum()
-                if outlier_count > 0:
-                    outlier_info[col] = int(outlier_count)
-            if outlier_info:
-                issues.append(f"⚠️ Outliers detected:\n{outlier_info}")
+            for c in numeric.columns:
+                if numeric[c].std(ddof=0) == 0 or numeric[c].isna().all():
+                    continue
+                z = np.abs((numeric[c] - numeric[c].mean()) / numeric[c].std(ddof=0))
+                out_cnt = int((z > 3).sum())
+                if out_cnt > 0:
+                    outlier_info[c] = out_cnt
 
-            if not issues:
+            if missing.empty and dup_count == 0 and not outlier_info:
                 results.append({"type": "text", "content": "✅ No missing values, duplicates, or outliers found."})
             else:
                 results.append({
                     "type": "data_quality",
                     "content": {
                         "missing": missing.to_dict(),
-                        "duplicates": int(dup_count),
+                        "duplicates": dup_count,
                         "outliers": outlier_info
                     }
                 })
 
-        elif action == "rows":
+            return results
+
+        # ---------------- Dataset info ----------------
+        if action == "rows":
             results.append({"type": "text", "content": f"The dataset has **{df.shape[0]} rows**."})
-
-        elif action == "columns":
+            return results
+        if action == "columns":
             results.append({"type": "text", "content": f"The dataset has **{df.shape[1]} columns**."})
-
-        elif action == "dtypes":
+            return results
+        if action == "dtypes":
             results.append({"type": "table", "content": df.dtypes.to_frame("dtype")})
+            return results
 
-        elif action == "mean":
+        # ---------------- Statistics ----------------
+        if action == "mean":
             numeric = df.select_dtypes(include=[np.number])
             results.append({"type": "table", "content": numeric.mean().to_frame("mean")})
-
-        elif action == "median":
-            if cols:
-                res = {c: float(df[c].dropna().median()) for c in cols}
-                results.append({"type": "text", "content": f"Median:\n{res}"})
-            else:
-                numeric = df.select_dtypes(include=[np.number])
-                results.append({"type": "table", "content": pd.DataFrame(numeric.median().to_dict(), index=["median"]).T})
-
-        elif action == "mode":
+            return results
+        if action == "median":
+            numeric = df.select_dtypes(include=[np.number])
+            results.append({"type": "table", "content": numeric.median().to_frame("median")})
+            return results
+        if action == "mode":
             if cols:
                 res = {c: df[c].mode().tolist() for c in cols}
                 results.append({"type": "text", "content": f"Mode:\n{res}"})
             else:
                 results.append({"type": "text", "content": "Please specify a column for mode."})
-
-        elif action == "describe":
+            return results
+        if action == "describe":
             results.append({"type": "table", "content": df.describe(include="all")})
+            return results
 
-        elif action == "head":
+        # ---------------- Head/Tail ----------------
+        if action == "head":
             n = 5
             m = re.search(r"head\s*(\d+)", text.lower())
             if m: n = int(m.group(1))
             results.append({"type": "table", "content": df.head(n)})
-
-        elif action == "tail":
+            return results
+        if action == "tail":
             n = 5
             m = re.search(r"tail\s*(\d+)", text.lower())
             if m: n = int(m.group(1))
             results.append({"type": "table", "content": df.tail(n)})
+            return results
 
-        elif action == "dropna":
+        # ---------------- NA handling ----------------
+        if action == "dropna":
             before = df.shape
             new_df = df.dropna()
-            # st.session_state["df"] = new_df
+            st.session_state["df"] = new_df
             after = new_df.shape
             results.append({"type": "text", "content": f"Dropped NA rows. Before: {before}, After: {after}"})
-
-        elif action == "fillna":
+            return results
+        if action == "fillna":
             imputer = SimpleImputer(strategy="mean")
             numeric_cols = df.select_dtypes(include=[np.number]).columns
-            df[numeric_cols] = pd.DataFrame(imputer.fit_transform(df[numeric_cols]), columns=numeric_cols)
-            for col in df.select_dtypes(exclude=[np.number]).columns:
-                df[col] = df[col].fillna(df[col].mode().iloc[0] if not df[col].mode().empty else "")
-            # st.session_state["df"] = df
-            results.append({"type": "text", "content": "Filled missing values: numeric -> mean, non-numeric -> mode."})
-        
-        elif action == "feature_types":
+            # apply only if any numeric cols exist
+            if len(numeric_cols) > 0:
+                df[numeric_cols] = pd.DataFrame(imputer.fit_transform(df[numeric_cols]), columns=numeric_cols)
+            for c in df.select_dtypes(exclude=[np.number]).columns:
+                if not df[c].mode().empty:
+                    df[c] = df[c].fillna(df[c].mode().iloc[0])
+                else:
+                    df[c] = df[c].fillna("")
+            st.session_state["df"] = df
+            results.append({"type": "text", "content": "Filled missing values: numeric → mean, non-numeric → mode."})
+            return results
+
+        # ---------------- Feature types ----------------
+        if action == "feature_types":
             numerical = df.select_dtypes(include=[np.number]).columns.tolist()
             categorical = df.select_dtypes(exclude=[np.number]).columns.tolist()
-
             result_df = pd.DataFrame({
                 "Feature Type": ["Numerical", "Categorical"],
                 "Columns": [", ".join(numerical) if numerical else "None",
                             ", ".join(categorical) if categorical else "None"]
             })
-
             results.append({"type": "table", "content": result_df})
+            return results
 
-        elif action == "distribution":
-            figs = []
+        # ---------------- Distribution analysis ----------------
+        if action == "distribution":
+            figs: List[go.Figure] = []
             numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-
-            # Exclude ID-like columns
-            exclude_ids = [c for c in df.columns if "id" in c.lower()]
-            numeric_cols = [c for c in numeric_cols if c not in exclude_ids]
-
+            numeric_cols = [c for c in numeric_cols if "id" not in c.lower()]
             if not numeric_cols:
                 results.append({"type": "text", "content": "No numeric columns found for distribution analysis."})
-            else:
-                skew_info = {}
-                narrative_parts = []
+                return results
 
-                for col in numeric_cols:
-                    # Skewness & kurtosis
-                    skew_val = df[col].skew()
-                    kurt_val = df[col].kurtosis()
-
-                    if skew_val < -0.5:
-                        skewness = "Left-skewed (most values high, with a few low outliers)"
-                    elif skew_val > 0.5:
-                        skewness = "Right-skewed (most values low, with a few high outliers)"
-                    else:
-                        skewness = "Approximately symmetric"
-
-                    if kurt_val > 3:
-                        tail_note = "with fat tails (occasional extreme values)"
-                    elif kurt_val < 3:
-                        tail_note = "with light tails (values more concentrated)"
-                    else:
-                        tail_note = ""
-
-                    skew_info[col] = {
-                        "skewness": skewness,
-                        "skew_value": float(skew_val),
-                        "kurtosis": float(kurt_val)
-                    }
-
-                    # Narrative text for each column
-                    narrative_parts.append(f"**{col}** → {skewness} {tail_note}".strip())
-
-                    # Histogram with black edges
-                    fig = px.histogram(df, x=col, title=f"Distribution of {col}")
-                    fig.update_traces(marker_line_color="black", marker_line_width=1)
-                    figs.append(fig)
-                    results.append({"type": "plotly", "content": fig})
-
-                # Narrative summary
-                narrative_text = "### 📊 Distribution Analysis\n\n"
-                narrative_text += "Here are the histograms for all numerical variables in your dataset:\n\n"
-                narrative_text += "\n\n".join(narrative_parts)
-
-                results.append({"type": "text", "content": narrative_text})
-
-                # Skewness & kurtosis summary table
-                skew_df = pd.DataFrame(skew_info).T
-                results.append({"type": "table", "content": skew_df})
-
-                # Download all histograms as ZIP
-                zip_buffer = io.BytesIO()
-                with zipfile.ZipFile(zip_buffer, "w") as zf:
-                    for i, fig in enumerate(figs, start=1):
-                        img_bytes = fig.to_image(format="png", scale=2)
-                        zf.writestr(f"distribution_{i}.png", img_bytes)
-
-                results.append({
-                    "type": "download",
-                    "content": {
-                        "file": zip_buffer.getvalue(),
-                        "filename": "distribution_histograms.zip",
-                        "label": "📥 Download all distribution histograms"
-                    }
-                })
-
-        elif action == "target_relationships":
-            # Extract target column
-            cols = extract_column_names(text, df)
-            target = cols[0] if cols else df.columns[-1]  # default: last column
-
-            if target not in df.columns:
-                results.append({"type": "text", "content": f"Target column '{target}' not found in dataset."})
-            else:
-                target_dtype = df[target].dtype
-
-                plots = []
-                summary = [f"### 🎯 Relationships with Target: **{target}**\n"]
-
-                if pd.api.types.is_numeric_dtype(target_dtype):
-                    # Numeric target
-                    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-                    numeric_cols = [c for c in numeric_cols if c != target and "id" not in c.lower()]
-
-                    for col in numeric_cols:
-                        fig = px.scatter(df, x=col, y=target, trendline="ols",
-                                         title=f"{col} vs {target}")
-                        fig.update_traces(marker=dict(line=dict(width=1, color="black")))
-                        plots.append(fig)
-
-                    # Correlation summary
-                    corrs = df[numeric_cols + [target]].corr()[target].drop(target)
-                    top_corrs = corrs[abs(corrs) > 0.3].sort_values(ascending=False)
-                    if not top_corrs.empty:
-                        summary.append("Strong correlations with target:\n")
-                        for col, val in top_corrs.items():
-                            direction = "positive" if val > 0 else "negative"
-                            summary.append(f"- **{col}** → {direction} correlation (r = {val:.2f})")
-                    else:
-                        summary.append("No strong linear correlations found with target.")
-
+            skew_info = {}
+            narrative_parts = []
+            for c in numeric_cols:
+                series = df[c].dropna()
+                if series.empty:
+                    skew_val = 0.0
+                    kurt = 0.0
                 else:
-                    # Categorical target
-                    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-                    cat_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
-                    cat_cols = [c for c in cat_cols if c != target]
+                    skew_val = float(series.skew())
+                    kurt = float(series.kurtosis())
 
-                    # Boxplots for numeric vs target
-                    for col in numeric_cols:
-                        fig = px.box(df, x=target, y=col, points="all",
-                                     title=f"{col} distribution by {target}")
-                        plots.append(fig)
+                if skew_val < -0.5:
+                    skewness = "Left-skewed (most values high, with some low outliers)"
+                elif skew_val > 0.5:
+                    skewness = "Right-skewed (most values low, with some high outliers)"
+                else:
+                    skewness = "Approximately symmetric"
 
-                    # Bar plots for categorical vs target
-                    for col in cat_cols:
-                        cross = pd.crosstab(df[col], df[target])
-                        fig = px.bar(cross, barmode="group",
-                                     title=f"{col} vs {target}")
-                        plots.append(fig)
+                if kurt > 3:
+                    tail_note = "with fat tails (occasional extreme values)"
+                elif kurt < 3:
+                    tail_note = "with light tails"
+                else:
+                    tail_note = ""
 
-                    summary.append("Boxplots and bar plots show distribution differences across target classes.")
+                skew_info[c] = {"skewness": skewness, "skew_value": skew_val, "kurtosis": kurt}
+                narrative_parts.append(f"{c} → {skewness}" + (f", {tail_note}" if tail_note else ""))
 
-                # Add plots to results
-                for fig in plots:
-                    results.append({"type": "plotly", "content": fig})
-
-                # Add summary
-                results.append({"type": "text", "content": "\n".join(summary)})
-
-                # Download all plots as images
-                if plots:
-                    images = []
-                    for i, fig in enumerate(plots):
-                        images.append(fig.to_image(format="png", scale=2))
-                    results.append({
-                        "type": "download",
-                        "content": {
-                            "file": b"".join(images),
-                            "filename": f"{target}_relationships.png",
-                            "label": f"📥 Download {target} Relationship Plots"
-                        }
-                    })
-
-        elif action == "correlation":
-            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-            exclude_ids = [c for c in df.columns if "id" in c.lower()]
-            numeric_cols = [c for c in numeric_cols if c not in exclude_ids]
-
-            if len(numeric_cols) < 2:
-                results.append({"type": "text", "content": "Not enough numeric columns for correlation analysis."})
-            else:
-                corr = df[numeric_cols].corr()
-
-                # Heatmap with black edges
-                fig = px.imshow(
-                    corr,
-                    text_auto=".2f",
-                    color_continuous_scale="RdBu_r",
-                    title="Correlation Heatmap of Numerical Features",
-                )
-                fig.update_traces(marker_line_color="black", selector=dict(type="heatmap"))
+                fig = px.histogram(df, x=c, title=f"Distribution: {c}")
+                fig.update_traces(marker=dict(line=dict(width=1, color="black")))
+                figs.append(fig)
                 results.append({"type": "plotly", "content": fig})
 
-                # Narrative summary of high correlations
-                narrative = ["### 🔗 Correlation Analysis\n"]
-                high_corrs = []
-                for i in range(len(corr.columns)):
-                    for j in range(i + 1, len(corr.columns)):
-                        val = corr.iloc[i, j]
-                        if abs(val) > 0.7:
-                            high_corrs.append((corr.columns[i], corr.columns[j], val))
+            narrative_text = "### 📊 Distribution Analysis\n\n"
+            narrative_text += "Here are the histograms for all numerical variables:\n\n"
+            narrative_text += "\n\n".join(narrative_parts)
+            results.append({"type": "text", "content": narrative_text})
 
-                if high_corrs:
-                    narrative.append("Strong correlations detected:\n")
-                    for c1, c2, val in high_corrs:
-                        direction = "positive" if val > 0 else "negative"
-                        narrative.append(f"- **{c1}** and **{c2}** → {direction} correlation (r = {val:.2f})")
-                else:
-                    narrative.append("No strong correlations (|r| > 0.7) found among numeric variables.")
+            skew_df = pd.DataFrame(skew_info).T
+            results.append({"type": "table", "content": skew_df})
+            return results
 
-                results.append({"type": "text", "content": "\n".join(narrative)})
+        # ---------------- Target relationships ----------------
+        if action == "target_relationships":
+            # user may specify target column via extract_column_names or fallback to last column
+            target_cols = cols if cols else []
+            target = target_cols[0] if target_cols else df.columns[-1]
+            if target not in df.columns:
+                results.append({"type": "text", "content": f"Target column '{target}' not found."})
+                return results
 
-                # Download heatmap
-                img_bytes = fig.to_image(format="png", scale=2)
-                results.append({
-                    "type": "download",
-                    "content": {
-                        "file": img_bytes,
-                        "filename": "correlation_heatmap.png",
-                        "label": "📥 Download Correlation Heatmap"
-                    }
-                })
+            plots = []
+            summary_lines = [f"### 🎯 Relationships with Target: **{target}**\n"]
+            if pd.api.types.is_numeric_dtype(df[target]):
+                numeric_preds = [c for c in df.select_dtypes(include=[np.number]).columns if c != target and "id" not in c.lower()]
+                if not numeric_preds:
+                    results.append({"type": "text", "content": "No numeric predictors available for target analysis."})
+                    return results
 
-        elif action == "categorical_counts":
-            cat_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
-
-            if not cat_cols:
-                results.append({"type": "text", "content": "No categorical variables found in the dataset."})
-            else:
-                summary = ["### 📊 Frequency Counts for Categorical Variables\n"]
-                plots = []
-
-                for col in cat_cols:
-                    counts = df[col].value_counts().reset_index()
-                    counts.columns = [col, "count"]
-
-                    # Add text summary
-                    summary.append(f"**{col}**:\n{counts.head(5).to_dict(orient='records')} ...")
-
-                    # Add bar plot
-                    fig = px.bar(counts, x=col, y="count", title=f"Frequency of {col}")
+                for pred in numeric_preds:
+                    fig = px.scatter(df, x=pred, y=target, trendline="ols", title=f"{pred} vs {target}")
                     fig.update_traces(marker=dict(line=dict(width=1, color="black")))
                     plots.append(fig)
-
-                # Add plots to results
-                for fig in plots:
                     results.append({"type": "plotly", "content": fig})
 
-                # Add summary text
-                results.append({"type": "text", "content": "\n".join(summary)})
+                corrs = df[numeric_preds + [target]].corr()[target].drop(target)
+                strong = corrs[abs(corrs) > 0.3].sort_values(key=lambda s: -abs(s))
+                if not strong.empty:
+                    summary_lines.append("Strong linear relationships with target:\n")
+                    for col, val in strong.items():
+                        direction = "positive" if val > 0 else "negative"
+                        summary_lines.append(f"- **{col}** → {direction} correlation (r = {val:.2f})")
+                else:
+                    summary_lines.append("No strong linear correlations found with the numeric predictors.")
+            else:
+                # categorical target: numeric predictors -> boxplots; categorical predictors -> grouped bars
+                numeric_preds = [c for c in df.select_dtypes(include=[np.number]).columns if c != target]
+                cat_preds = [c for c in df.select_dtypes(exclude=[np.number]).columns if c != target]
+                for pred in numeric_preds:
+                    fig = px.box(df, x=target, y=pred, points="all", title=f"{pred} distribution by {target}")
+                    fig.update_traces(marker=dict(line=dict(width=1, color="black")))
+                    plots.append(fig)
+                    results.append({"type": "plotly", "content": fig})
+                for pred in cat_preds:
+                    cross = pd.crosstab(df[pred], df[target])
+                    fig = px.bar(cross, barmode="group", title=f"{pred} vs {target}")
+                    fig.update_traces(marker=dict(line=dict(width=1, color="black")))
+                    plots.append(fig)
+                    results.append({"type": "plotly", "content": fig})
+                summary_lines.append("Boxplots and bar charts show distribution differences across target classes.")
 
-                # Download all frequency plots (optional, like dashboard)
-                if plots:
-                    images = []
-                    for fig in plots:
-                        images.append(fig.to_image(format="png", scale=2))
-                    results.append({
-                        "type": "download",
-                        "content": {
-                            "file": b"".join(images),
-                            "filename": "categorical_counts.png",
-                            "label": "📥 Download All Frequency Plots"
-                        }
-                    })
+            results.append({"type": "text", "content": "\n".join(summary_lines)})
+            return results
 
-        elif action in ("histogram", "bar", "line", "scatter", "heatmap"):
-            figs = []  # collect figures for dashboard + download
+        # ---------------- Correlation / Heatmap ----------------
+        if action in ("correlation", "corr"):
+            numeric_cols = [c for c in df.select_dtypes(include=[np.number]).columns if "id" not in c.lower()]
+            if len(numeric_cols) < 2:
+                results.append({"type": "text", "content": "Not enough numeric columns for correlation analysis."})
+                return results
 
-            # Detect numeric and categorical columns
-            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-            categorical_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
+            corr = df[numeric_cols].corr()
+            # heatmap via px.imshow (do not use marker for heatmap)
+            fig = px.imshow(corr, text_auto=".2f", color_continuous_scale="RdBu_r", title="Correlation Heatmap")
+            fig.update_traces(colorbar=dict(title="Correlation"), selector=dict(type="heatmap"))
+            fig.update_layout(margin=dict(l=60, r=30, t=60, b=60), template="plotly_white")
+            results.append({"type": "plotly", "content": fig})
 
-            # Exclude ID-like columns
-            exclude_ids = [c for c in df.columns if "id" in c.lower()]
-            numeric_cols = [c for c in numeric_cols if c not in exclude_ids]
+            narrative = ["### 🔗 Correlation Analysis\n"]
+            high_corrs = []
+            for i in range(len(corr.columns)):
+                for j in range(i + 1, len(corr.columns)):
+                    val = float(corr.iloc[i, j])
+                    if abs(val) > 0.7:
+                        high_corrs.append((corr.columns[i], corr.columns[j], val))
 
-            # If user specified columns, use them; otherwise auto-detect
+            if high_corrs:
+                narrative.append("Strong correlations detected:")
+                for c1, c2, val in high_corrs:
+                    direction = "positive" if val > 0 else "negative"
+                    narrative.append(f"- **{c1}** and **{c2}** → {direction} correlation (r = {val:.2f})")
+            else:
+                narrative.append("No strong correlations (|r| > 0.7) found among numeric variables.")
+
+            results.append({"type": "text", "content": "\n".join(narrative)})
+            return results
+
+        # ---------------- Categorical counts ----------------
+        if action == "categorical_counts":
+            cat_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
+            if not cat_cols:
+                results.append({"type": "text", "content": "No categorical variables found in the dataset."})
+                return results
+
+            plots = []
+            summary_lines = ["### 📊 Frequency Counts for Categorical Variables\n"]
+            for c in cat_cols:
+                counts = df[c].value_counts().reset_index()
+                counts.columns = [c, "count"]
+                top_preview = counts.head(6).to_dict(orient="records")
+                summary_lines.append(f"**{c}**: {top_preview} ...")
+                fig = px.bar(counts, x=c, y="count", title=f"Frequency of {c}")
+                fig.update_traces(marker=dict(line=dict(width=1, color="black")))
+                plots.append(fig)
+                results.append({"type": "plotly", "content": fig})
+
+            results.append({"type": "text", "content": "\n".join(summary_lines)})
+            return results
+
+        # ---------------- Generic plotting block (histogram/bar/line/scatter/heatmap multi) ----------------
+        if action in ("histogram", "bar", "line", "scatter", "heatmap"):
+            figs = []
+            numeric_cols = [c for c in df.select_dtypes(include=[np.number]).columns if "id" not in c.lower()]
             target_cols = cols if cols else numeric_cols
 
-            # Scatter (needs 2 cols)
             if action == "scatter":
                 if len(target_cols) >= 2:
                     for i in range(len(target_cols) - 1):
                         x, y = target_cols[i], target_cols[i + 1]
                         fig = px.scatter(df, x=x, y=y, title=f"Scatter: {x} vs {y}")
-                        fig.update_traces(marker=dict(line=dict(color="black", width=1)))
+                        fig.update_traces(marker=dict(line=dict(width=1, color="black")))
                         figs.append(fig)
                         results.append({"type": "plotly", "content": fig})
                 else:
                     results.append({"type": "text", "content": "Scatter requires at least 2 numerical columns."})
+                    return results
 
-            # Line (needs 2 cols)
             elif action == "line":
                 if len(target_cols) >= 2:
                     for i in range(len(target_cols) - 1):
                         x, y = target_cols[i], target_cols[i + 1]
                         fig = px.line(df, x=x, y=y, title=f"Line: {x} vs {y}")
-                        fig.update_traces(line=dict(color="blue", width=2),
-                                          marker=dict(line=dict(color="black", width=1)))
+                        fig.update_traces(line=dict(width=2), marker=dict(line=dict(width=1, color="black")))
                         figs.append(fig)
                         results.append({"type": "plotly", "content": fig})
                 else:
                     results.append({"type": "text", "content": "Line requires at least 2 numerical columns."})
+                    return results
 
-            # Heatmap (correlation of all numeric cols)
             elif action == "heatmap":
-                if numeric_cols:
-                    corr = df[numeric_cols].corr()
-                    fig = px.imshow(corr, text_auto=True, title="Correlation Heatmap")
-                    fig.update_traces(marker_line_color="black", marker_line_width=1)
+                numeric = df.select_dtypes(include=[np.number])
+                if numeric.shape[1] < 2:
+                    results.append({"type": "text", "content": "Not enough numeric columns for heatmap."})
+                    return results
+                corr = numeric.corr()
+                fig = px.imshow(corr, text_auto=".2f", title="Correlation Heatmap")
+                fig.update_traces(colorbar=dict(title="Correlation"), selector=dict(type="heatmap"))
+                fig.update_layout(template="plotly_white")
+                figs.append(fig)
+                results.append({"type": "plotly", "content": fig})
+
+            else:  # histogram or bar
+                for c in target_cols:
+                    if action == "bar" or (df[c].dtype == object and action == "histogram"):
+                        counts = df[c].value_counts().reset_index()
+                        counts.columns = [c, "count"]
+                        fig = px.bar(counts, x=c, y="count", title=f"Bar: {c}")
+                        fig.update_traces(marker=dict(line=dict(width=1, color="black")))
+                    else:
+                        if pd.api.types.is_numeric_dtype(df[c]):
+                            fig = px.histogram(df, x=c, title=f"Histogram: {c}")
+                            fig.update_traces(marker=dict(line=dict(width=1, color="black")))
+                        else:
+                            counts = df[c].value_counts().reset_index()
+                            counts.columns = [c, "count"]
+                            fig = px.bar(counts, x=c, y="count", title=f"Bar: {c}")
+                            fig.update_traces(marker=dict(line=dict(width=1, color="black")))
                     figs.append(fig)
                     results.append({"type": "plotly", "content": fig})
-                else:
-                    results.append({"type": "text", "content": "No numeric columns for heatmap."})
+                    return results
 
-            # Histogram / Bar
-            else:
-                for col in target_cols:
-                    if action == "bar" or (df[col].dtype == object and action == "histogram"):
-                        counts = df[col].value_counts().reset_index()
-                        counts.columns = [col, "count"]
-                        fig = px.bar(counts, x=col, y="count", title=f"Bar: {col}")
-                        fig.update_traces(marker_line_color="black", marker_line_width=1)
-                        figs.append(fig)
-                        results.append({"type": "plotly", "content": fig})
-                    else:
-                        if pd.api.types.is_numeric_dtype(df[col]):
-                            fig = px.histogram(df, x=col, title=f"Histogram: {col}")
-                            fig.update_traces(marker_line_color="black", marker_line_width=1)
-                            figs.append(fig)
-                            results.append({"type": "plotly", "content": fig})
-                        else:
-                            counts = df[col].value_counts().reset_index()
-                            counts.columns = [col, "count"]
-                            fig = px.bar(counts, x=col, y="count", title=f"Bar: {col}")
-                            fig.update_traces(marker_line_color="black", marker_line_width=1)
-                            figs.append(fig)
-                            results.append({"type": "plotly", "content": fig})
-
-            # ✅ Dashboard download (all figs into ZIP)
-            if figs:
-                zip_buffer = io.BytesIO()
-                with zipfile.ZipFile(zip_buffer, "w") as zf:
-                    for i, fig in enumerate(figs, start=1):
-                        img_bytes = fig.to_image(format="png", scale=2)
-                        zf.writestr(f"{action}_{i}.png", img_bytes)
-
-                results.append({
-                    "type": "download",
-                    "content": {
-                        "file": zip_buffer.getvalue(),
-                        "filename": f"{action}_plots_dashboard.zip",
-                        "label": f"📥 Download all {action} plots (ZIP)"
-                    }
-                })
-
-        elif action == "count":
+        # ---------------- Unique counts ----------------
+        if action == "count":
             if cols:
                 res = {c: int(df[c].nunique()) for c in cols}
                 results.append({"type": "text", "content": f"Unique counts:\n{res}"})
             else:
                 results.append({"type": "text", "content": "Please specify columns to count unique values."})
+            return results
 
-        elif action == "corr":
+        # ---------------- Legacy corr (matplotlib) ----------------
+        if action == "corr":
             corr = df.select_dtypes(include=[np.number]).corr()
-            fig, ax = plt.subplots()
+            fig, ax = plt.subplots(figsize=(6, 6))
             cax = ax.matshow(corr)
             fig.colorbar(cax)
             ax.set_xticks(range(len(corr.columns)))
@@ -570,16 +503,22 @@ def run_action(action: str, text: str, df: pd.DataFrame) -> List[Dict[str, Any]]
             ax.set_xticklabels(corr.columns, rotation=90)
             ax.set_yticklabels(corr.columns)
             results.append({"type": "matplotlib", "content": fig})
+            return results
 
-        else:
-            results.append({"type": "text", "content": "Sorry — I did not understand the request."})
+        # ---------------- Unknown ----------------
+        results.append({"type": "text", "content": "Sorry — I did not understand the request."})
+        return results
 
     except Exception as e:
-        results.append({"type": "text", "content": f"Error: {e}"})
+        return [{"type": "text", "content": f"Error: {e}"}]
 
-    return results
 
+# ---------------------- Multi-action wrapper ----------------------
 def run_actions(actions: List[str], text: str, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    """
+    Call run_action for each action and flatten results.
+    Defensive: if a run_action returns a dict it will be wrapped into list.
+    """
     all_results: List[Dict[str, Any]] = []
     for action in actions:
         try:
@@ -588,31 +527,11 @@ def run_actions(actions: List[str], text: str, df: pd.DataFrame) -> List[Dict[st
                 all_results.append(action_results)
             elif isinstance(action_results, list):
                 all_results.extend(action_results)
-            # This logic seems misplaced, it will add 'feature_types' to actions in every loop iteration if the condition is met
-            # I will remove it for now as it's likely an error.
-            # if re.search(r"(categorical|numerical|feature types?)", text.lower()):
-            #     actions.append("feature_types")
-
+            else:
+                all_results.append({"type": "text", "content": f"Unexpected result type from {action}"})
         except Exception as e:
             all_results.append({"type": "text", "content": f"Error in {action}: {e}"})
     return all_results
-
-def run_actions(actions: List[str], text: str, df: pd.DataFrame) -> List[Dict[str, Any]]:
-    all_results: List[Dict[str, Any]] = []
-    for action in actions:
-        try:
-            action_results = run_action(action, text, df)
-            if isinstance(action_results, dict):
-                all_results.append(action_results)
-            elif isinstance(action_results, list):
-                all_results.extend(action_results)
-            if re.search(r"(categorical|numerical|feature types?)", text.lower()):
-                actions.append("feature_types")
-
-        except Exception as e:
-            all_results.append({"type": "text", "content": f"Error in {action}: {e}"})
-    return all_results
-
 # ---------------------- Streamlit UI ----------------------
 st.set_page_config(page_title='PAT', layout='wide')
 
@@ -793,19 +712,30 @@ with chat_col:
 
     # Chat input always at the bottom
     user_input = st.chat_input("Ask me to analyze your data...")
-    if user_input:
-        st.session_state["chat_started"] = True
-        st.session_state["chat_history"].append(
-            {"role": "user", "content": user_input}
-        )
-        actions = detect_actions(user_input)
-        results = run_actions(actions, user_input, st.session_state["df"])
-        for result in results:
-         st.session_state["chat_history"].append(
-            {"role": "assistant", "type": result["type"], "content": result["content"]}
-         )
-        st.rerun()
+if user_input:
+    st.session_state["chat_started"] = True
+    st.session_state["chat_history"].append(
+        {"role": "user", "content": user_input}
+    )
+    
+    actions = detect_actions(user_input)
 
+    # Run all detected actions
+    results = []
+    for action in actions:
+        action_results = run_action(action, user_input, st.session_state["df"])
+        if isinstance(action_results, dict):
+            results.append(action_results)
+        elif isinstance(action_results, list):
+            results.extend(action_results)
+
+    # Append assistant results
+    for result in results:
+        st.session_state["chat_history"].append(
+            {"role": "assistant", "type": result["type"], "content": result["content"]}
+        )
+    
+    st.rerun()
 
 with right_col:
     st.header('📊 Current dataset')
