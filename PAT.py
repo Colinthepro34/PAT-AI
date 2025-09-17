@@ -32,28 +32,29 @@ if 'chat_started' not in st.session_state:
 
 # ---------------------- Prompt Parsing ----------------------
 ACTION_MAP = {
-    'mean': ['mean', 'average', 'avg'],
-    'median': ['median'],
-    'mode': ['mode'],
-    'describe': ['describe', 'summary', 'summary statistics'],
-    'head': ['head', 'show head', 'show first', 'first rows'],
-    'tail': ['tail', 'last rows'],
-    'dropna': ['dropna', 'drop na', 'drop missing', 'remove missing'],
-    'fillna': ['fillna', 'fill missing', 'impute'],
-    'histogram': ['histogram', 'hist', 'distribution','Distribution of numerical variables '],
-    'barchart': ['bar chart','bar','Frequency counts for categorical variables','Frequency counts for numerical variables'],
-    'heatmap': ['Correlation between numerical variables','heatmap'],
-    'scatter': ['scatter', 'scatter plot'],
+    'mean': ['mean', 'average', 'avg', 'What is the average of'],
+    'median': ['median', 'midpoint', 'middle value'],
+    'mode': ['mode', 'most frequent', 'common value'],
+    'describe': ['describe', 'summary', 'summary statistics', 'dataset summary', 'tell me about the data'],
+    'head': ['head', 'show head', 'show first', 'first rows', 'top rows', 'first few rows', 'preview the data'],
+    'tail': ['tail', 'last rows', 'bottom rows', 'last few rows'],
+    'dropna': ['dropna', 'drop na', 'drop missing', 'remove missing', 'remove rows with missing values'],
+    'fillna': ['fillna', 'fill missing', 'impute', 'handle missing', 'handle missing values'],
+    'histogram': ['histogram', 'hist', 'distribution', 'numerical distribution', 'distribution of numerical variables'],
+    'barchart': ['bar chart', 'bar', 'frequency counts', 'frequency counts for categorical variables'],
+    'heatmap': ['heatmap', 'correlation heatmap', 'correlation between numerical variables'],
+    'scatter': ['scatter', 'scatter plot', 'relationship between numerical variables'],
     'count': ['count', 'value counts'],
-    'corr': ['correlation', 'corr', 'correlations'],
-    "rows": ["rows", "number of rows", "row count"],
-    "columns": ["columns", "number of columns", "col count"],
-    "dtypes": ["data types", "dtypes", "types", "column types"],
-    "data_quality": ["data quality", "check quality", "missing values", "duplicates", "outliers", "clean data"],
-    "feature_types": ["categorical","numerical"],
-    "target_relationships":["target","relationship"],
-    "categorical_counts":["categorical","count"],
-    "distribution":["distribution"]
+    'corr': ['correlation', 'corr', 'correlations', 'correlation matrix'],
+    'rows': ['rows','row', 'number of rows', 'row count', 'how many rows','How many rows are in the dataset'],
+    'columns': ['columns','column', 'number of columns', 'col count', 'how many columns'],
+    'dtypes': ['datatypes','datatype', 'dtypes', 'types', 'column types', 'what are the data types'],
+    'data_quality': ['data quality', 'check quality', 'missing values', 'duplicates', 'outliers', 'clean data', 'check for missing values'],
+    'feature_types': ['categorical', 'numerical', 'feature types', 'what are the feature types'],
+    'target_relationships': ['target', 'relationship', 'relationship with target', 'analyze target'],
+    'distribution': ['distribution', 'how is the data distributed'],
+    'line': ['line', 'line chart', 'line plot', 'time series plot', 'plot over time'],
+    'insights': ['insights', 'key insights', 'summarize the data', 'what are the key takeaways', 'analyze the dataset and give me some insights', 'tell me about the dataset and its key features', 'I need a summary of the data quality and business insights']
 }
 
 INVERSE_ACTION = {}
@@ -143,7 +144,7 @@ def extract_column_names(text: str, df: pd.DataFrame) -> List[str]:
 # ---------------------- Single action handler (always returns list of dicts) ----------------------
 def run_action(action: str, text: str, df: pd.DataFrame, cols: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     """
-    Execute a single action and return list of result blocks.
+    Execute a single action and return a list of result blocks.
     Each block is a dict: {'type': 'text'|'table'|'plotly'|'matplotlib'|'data_quality'|'download', 'content': ...}
     """
     if df is None:
@@ -180,7 +181,6 @@ def run_action(action: str, text: str, df: pd.DataFrame, cols: Optional[List[str
                         "outliers": outlier_info
                     }
                 })
-
             return results
 
         # ---------------- Dataset info ----------------
@@ -204,27 +204,34 @@ def run_action(action: str, text: str, df: pd.DataFrame, cols: Optional[List[str
             results.append({"type": "table", "content": numeric.median().to_frame("median")})
             return results
         if action == "mode":
-            if cols:
-                res = {c: df[c].mode().tolist() for c in cols}
+            valid_cols = [c for c in cols if c in df.columns]
+            if valid_cols:
+                res = {}
+                for c in valid_cols:
+                    if pd.api.types.is_numeric_dtype(df[c]):
+                        bins = pd.cut(df[c], bins=10, include_lowest=True)
+                        mode_bin = bins.mode().iloc[0] if not bins.mode().empty else None
+                        res[c] = {'mode': mode_bin, 'count': bins.value_counts().iloc[0]}
+                    else:
+                        res[c] = {'mode': df[c].mode().tolist(), 'count': int(df[c].value_counts().iloc[0])}
                 results.append({"type": "text", "content": f"Mode:\n{res}"})
             else:
-                results.append({"type": "text", "content": "Please specify a column for mode."})
-            return results
-        if action == "describe":
-            results.append({"type": "table", "content": df.describe(include="all")})
+                results.append({"type": "text", "content": "Please specify valid column(s) for mode."})
             return results
 
         # ---------------- Head/Tail ----------------
         if action == "head":
             n = 5
             m = re.search(r"head\s*(\d+)", text.lower())
-            if m: n = int(m.group(1))
+            if m:
+                n = int(m.group(1))
             results.append({"type": "table", "content": df.head(n)})
             return results
         if action == "tail":
             n = 5
             m = re.search(r"tail\s*(\d+)", text.lower())
-            if m: n = int(m.group(1))
+            if m:
+                n = int(m.group(1))
             results.append({"type": "table", "content": df.tail(n)})
             return results
 
@@ -440,16 +447,31 @@ def run_action(action: str, text: str, df: pd.DataFrame, cols: Optional[List[str
                     return results
 
             elif action == "line":
-                if len(target_cols) >= 2:
-                    for i in range(len(target_cols) - 1):
-                        x, y = target_cols[i], target_cols[i + 1]
-                        fig = px.line(df, x=x, y=y, title=f"Line: {x} vs {y}")
-                        fig.update_traces(line=dict(width=2), marker=dict(line=dict(width=1, color="black")))
-                        figs.append(fig)
-                        results.append({"type": "plotly", "content": fig})
+                figs = []
+                time_cols = [
+                    c for c in df.columns
+                    if "date" in c.lower() or "year" in c.lower() or "time" in c.lower()
+                ]
+                if not time_cols:
+                    results.append({"type": "text", "content": "No timeline (date/year) column found for line plots."})
                 else:
-                    results.append({"type": "text", "content": "Line requires at least 2 numerical columns."})
-                    return results
+                    time_col = time_cols[0]  # take the first match
+                    numeric_cols = [
+                        c for c in df.select_dtypes(include=[np.number]).columns
+                        if "id" not in c.lower()
+                    ]
+                    if not numeric_cols:
+                        results.append({"type": "text", "content": "No numeric columns available for line plots."})
+                    else:
+                        for col in numeric_cols:
+                            fig = px.line(df, x=time_col, y=col, title=f"{col} over {time_col}")
+                            fig.update_traces(
+                                line=dict(width=2),
+                                marker=dict(line=dict(width=1, color="black"))
+                            )
+                            results.append({"type": "plotly", "content": fig})
+                            figs.append(fig)
+                return results
 
             elif action == "heatmap":
                 numeric = df.select_dtypes(include=[np.number])
@@ -463,26 +485,111 @@ def run_action(action: str, text: str, df: pd.DataFrame, cols: Optional[List[str
                 figs.append(fig)
                 results.append({"type": "plotly", "content": fig})
 
-            else:  # histogram or bar
-                for c in target_cols:
-                    if action == "bar" or (df[c].dtype == object and action == "histogram"):
-                        counts = df[c].value_counts().reset_index()
-                        counts.columns = [c, "count"]
-                        fig = px.bar(counts, x=c, y="count", title=f"Bar: {c}")
-                        fig.update_traces(marker=dict(line=dict(width=1, color="black")))
-                    else:
-                        if pd.api.types.is_numeric_dtype(df[c]):
-                            fig = px.histogram(df, x=c, title=f"Histogram: {c}")
-                            fig.update_traces(marker=dict(line=dict(width=1, color="black")))
-                        else:
-                            counts = df[c].value_counts().reset_index()
-                            counts.columns = [c, "count"]
-                            fig = px.bar(counts, x=c, y="count", title=f"Bar: {c}")
-                            fig.update_traces(marker=dict(line=dict(width=1, color="black")))
+            elif action == "histogram":
+                num_cols = [
+                    c for c in df.select_dtypes(include=[np.number]).columns
+                    if "id" not in c.lower()
+                ]
+                figs = []
+                for col in num_cols:
+                    fig = px.histogram(
+                        df, x=col, title=f"Histogram: {col}"
+                    )
+                    fig.update_traces(marker=dict(line=dict(width=1, color="black")))
+                    results.append({"type": "plotly", "content": fig})
                     figs.append(fig)
+                return results
+
+            elif action == "bar":
+                cat_cols = df.select_dtypes(exclude=[np.number]).columns
+                for col in cat_cols:
+                    counts = df[col].value_counts().reset_index()
+                    counts.columns = [col, "count"]
+                    fig = px.bar(counts, x=col, y="count", title=f"Bar Chart: {col}")
+                    fig.update_traces(marker=dict(line=dict(width=1, color="black")))
                     results.append({"type": "plotly", "content": fig})
                     return results
 
+        # ---------------- Insights block ----------------
+        if action == "insights":
+            insights = []
+            
+            # ... (code to detect trends, seasonality, and anomalies) ...
+            trends = []
+            num_cols = [c for c in df.select_dtypes(include=[np.number]).columns if "id" not in c.lower()]
+            time_cols = [c for c in df.columns if "date" in c.lower() or "year" in c.lower() or "time" in c.lower()]
+            
+            if time_cols:
+                time_col = time_cols[0]
+                df_sorted = df.sort_values(by=time_col)
+                
+                for col in num_cols:
+                    trend = df_sorted[col].diff().mean()
+                    if trend > 0:
+                        trends.append(f"📈 **{col}** shows an increasing trend over {time_col}.")
+                    elif trend < 0:
+                        trends.append(f"📉 **{col}** shows a decreasing trend over {time_col}.")
+
+            anomalies = {}
+            for col in num_cols:
+                z_scores = np.abs((df[col] - df[col].mean()) / df[col].std())
+                outliers = df[z_scores > 3]
+                if not outliers.empty:
+                    anomalies[col] = len(outliers)
+            
+            # ... (code for segmentation and seasonality) ...
+            
+            # ---------------- Dynamic Business/Practical Insights ----------------
+            business_text = ["### 💡 Business / Practical Insights\n\n"]
+
+            # Insight 1: Trends
+            if trends:
+                positive_trends = [t for t in trends if "increasing" in t]
+                negative_trends = [t for t in trends if "decreasing" in t]
+                
+                if positive_trends:
+                    business_text.append("✅ Leverage positive trends. Variables like " + ", ".join([t.split('**')[1] for t in positive_trends]) + " are growing, which could signal business success or a positive market shift.")
+                if negative_trends:
+                    business_text.append("🛑 Address negative trends. The decline in " + ", ".join([t.split('**')[1] for t in negative_trends]) + " may require strategic intervention or further investigation.")
+            
+            # Insight 2: Correlations
+            numeric_cols_for_corr = [c for c in df.select_dtypes(include=[np.number]).columns if "id" not in c.lower()]
+            if len(numeric_cols_for_corr) > 1:
+                corr = df[numeric_cols_for_corr].corr()
+                strong_pos_corrs = []
+                strong_neg_corrs = []
+                
+                for i in range(len(corr.columns)):
+                    for j in range(i + 1, len(corr.columns)):
+                        val = float(corr.iloc[i, j])
+                        if val > 0.7:
+                            strong_pos_corrs.append((corr.columns[i], corr.columns[j]))
+                        elif val < -0.7:
+                            strong_neg_corrs.append((corr.columns[i], corr.columns[j]))
+                
+                if strong_pos_corrs:
+                    business_text.append(f"🔗 **Strong positive correlations** detected: " + ", ".join([f"{c1} & {c2}" for c1, c2 in strong_pos_corrs]) + ". Consider how these variables influence each other to optimize your strategy.")
+                if strong_neg_corrs:
+                    business_text.append(f"🔗 **Strong negative correlations** detected: " + ", ".join([f"{c1} & {c2}" for c1, c2 in strong_neg_corrs]) + ". The inverse relationship may present opportunities for targeted adjustments.")
+
+            # Insight 3: Anomalies
+            if anomalies:
+                anomaly_summary = ", ".join([f"{col} ({count} outliers)" for col, count in anomalies.items()])
+                business_text.append(f"🚨 **Anomalies** found in {anomaly_summary}. These data points could be errors or valuable signals of a unique event that warrants further investigation.")
+
+            # Insight 4: Segmentation
+            cat_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
+            if any(df[c].nunique() > 1 and df[c].nunique() <= 10 for c in cat_cols):
+                business_text.append("🧩 **Segmentation** opportunities are present. Consider how customer or product segments based on categorical features might reveal different behaviors or trends.")
+                
+            # Fallback to general insights if no specifics found
+            if len(business_text) <= 1: # Only contains the heading
+                business_text.append("No specific patterns or strong trends were found. Consider these general tips:\n"
+                                     "- Look for correlations between your key metrics.\n"
+                                     "- Investigate any extreme values for potential anomalies.")
+
+            results.append({"type": "text", "content": "\n\n".join(business_text)})
+            
         # ---------------- Unique counts ----------------
         if action == "count":
             if cols:
@@ -505,14 +612,9 @@ def run_action(action: str, text: str, df: pd.DataFrame, cols: Optional[List[str
             results.append({"type": "matplotlib", "content": fig})
             return results
 
-        # ---------------- Unknown ----------------
+    except Exception as e:
         results.append({"type": "text", "content": "Sorry — I did not understand the request."})
         return results
-
-    except Exception as e:
-        return [{"type": "text", "content": f"Error: {e}"}]
-
-
 # ---------------------- Multi-action wrapper ----------------------
 def run_actions(actions: List[str], text: str, df: pd.DataFrame) -> List[Dict[str, Any]]:
     """
