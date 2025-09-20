@@ -147,14 +147,118 @@ def run_action(action: str, text: str, df: pd.DataFrame, cols: Optional[List[str
     Execute a single action and return a list of result blocks.
     Each block is a dict: {'type': 'text'|'table'|'plotly'|'matplotlib'|'data_quality'|'download', 'content': ...}
     """
+    results: List[Dict[str, Any]] = []
+
     if df is None:
         return [{"type": "text", "content": "No dataset loaded. Please upload a CSV or Excel file first."}]
 
-    results: List[Dict[str, Any]] = []
     if cols is None:
         cols = extract_column_names(text, df)
 
     try:
+        # ---------------- Dataset Info ----------------
+        if action == "rows":
+            results.append({"type": "text", "content": f"The dataset has **{df.shape[0]} rows**."})
+            return results
+
+        if action == "columns":
+            results.append({"type": "text", "content": f"The dataset has **{df.shape[1]} columns**."})
+            return results
+
+        if action == "dtypes":
+            results.append({"type": "table", "content": df.dtypes.to_frame("dtype")})
+            return results
+
+        # ---------------- Describe ----------------
+        if action == "describe":
+            desc = df.describe(include='all').T  # transpose so columns are rows
+            results.append({"type": "table", "content": desc})
+            return results
+
+        # ---------------- Mean / Median / Mode ----------------
+        if action == "mean":
+            numeric = df.select_dtypes(include=[np.number])
+            results.append({"type": "table", "content": numeric.mean().to_frame("mean")})
+            return results
+
+        if action == "median":
+            numeric = df.select_dtypes(include=[np.number])
+            results.append({"type": "table", "content": numeric.median().to_frame("median")})
+            return results
+
+        if action == "mode":
+            if not cols:
+                results.append({"type": "text", "content": "Please specify columns for mode calculation."})
+                return results
+            mode_res = {}
+            for c in cols:
+                if c in df.columns:
+                    mode_res[c] = df[c].mode().tolist()
+            results.append({"type": "text", "content": f"Mode:\n{mode_res}"})
+            return results
+
+        # ---------------- Insights ----------------
+        if action == "insights":
+            business_text = ["### 💡 Business / Practical Insights\n"]
+            
+            numeric_cols = [c for c in df.select_dtypes(include=[np.number]).columns if "id" not in c.lower()]
+            time_cols = [c for c in df.columns if "date" in c.lower() or "year" in c.lower() or "time" in c.lower()]
+            
+            # Trends
+            trends = []
+            if time_cols and numeric_cols:
+                time_col = time_cols[0]
+                df_sorted = df.sort_values(by=time_col)
+                for col in numeric_cols:
+                    trend = df_sorted[col].diff().mean()
+                    if trend > 0:
+                        trends.append(f"📈 **{col}** shows an increasing trend over {time_col}.")
+                    elif trend < 0:
+                        trends.append(f"📉 **{col}** shows a decreasing trend over {time_col}.")
+            
+            if trends:
+                business_text.extend(trends)
+            
+            # Correlations
+            if len(numeric_cols) > 1:
+                corr = df[numeric_cols].corr()
+                strong_pos = []
+                strong_neg = []
+                for i in range(len(corr.columns)):
+                    for j in range(i+1, len(corr.columns)):
+                        val = corr.iloc[i, j]
+                        if val > 0.7:
+                            strong_pos.append(f"{corr.columns[i]} & {corr.columns[j]}")
+                        elif val < -0.7:
+                            strong_neg.append(f"{corr.columns[i]} & {corr.columns[j]}")
+                if strong_pos:
+                    business_text.append(f"🔗 Strong positive correlations: {', '.join(strong_pos)}")
+                if strong_neg:
+                    business_text.append(f"🔗 Strong negative correlations: {', '.join(strong_neg)}")
+            
+            # Anomalies
+            anomalies = {}
+            for col in numeric_cols:
+                z_scores = np.abs((df[col] - df[col].mean()) / df[col].std())
+                outliers = df[z_scores > 3]
+                if not outliers.empty:
+                    anomalies[col] = len(outliers)
+            if anomalies:
+                anomaly_summary = ", ".join([f"{col} ({count} outliers)" for col, count in anomalies.items()])
+                business_text.append(f"🚨 Anomalies detected in: {anomaly_summary}")
+
+            # Segmentation opportunities
+            cat_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
+            if any(df[c].nunique() > 1 and df[c].nunique() <= 10 for c in cat_cols):
+                business_text.append("🧩 Segmentation opportunities detected in categorical features.")
+
+            # Fallback
+            if len(business_text) == 1:
+                business_text.append("No strong patterns detected. Review correlations, trends, and anomalies manually.")
+
+            results.append({"type": "text", "content": "\n".join(business_text)})
+            return results
+
         # ---------------- Data quality ----------------
         if action == "data_quality":
             missing = df.isnull().sum()
@@ -181,42 +285,6 @@ def run_action(action: str, text: str, df: pd.DataFrame, cols: Optional[List[str
                         "outliers": outlier_info
                     }
                 })
-            return results
-
-        # ---------------- Dataset info ----------------
-        if action == "rows":
-            results.append({"type": "text", "content": f"The dataset has **{df.shape[0]} rows**."})
-            return results
-        if action == "columns":
-            results.append({"type": "text", "content": f"The dataset has **{df.shape[1]} columns**."})
-            return results
-        if action == "dtypes":
-            results.append({"type": "table", "content": df.dtypes.to_frame("dtype")})
-            return results
-
-        # ---------------- Statistics ----------------
-        if action == "mean":
-            numeric = df.select_dtypes(include=[np.number])
-            results.append({"type": "table", "content": numeric.mean().to_frame("mean")})
-            return results
-        if action == "median":
-            numeric = df.select_dtypes(include=[np.number])
-            results.append({"type": "table", "content": numeric.median().to_frame("median")})
-            return results
-        if action == "mode":
-            valid_cols = [c for c in cols if c in df.columns]
-            if valid_cols:
-                res = {}
-                for c in valid_cols:
-                    if pd.api.types.is_numeric_dtype(df[c]):
-                        bins = pd.cut(df[c], bins=10, include_lowest=True)
-                        mode_bin = bins.mode().iloc[0] if not bins.mode().empty else None
-                        res[c] = {'mode': mode_bin, 'count': bins.value_counts().iloc[0]}
-                    else:
-                        res[c] = {'mode': df[c].mode().tolist(), 'count': int(df[c].value_counts().iloc[0])}
-                results.append({"type": "text", "content": f"Mode:\n{res}"})
-            else:
-                results.append({"type": "text", "content": "Please specify valid column(s) for mode."})
             return results
 
         # ---------------- Head/Tail ----------------
@@ -510,35 +578,6 @@ def run_action(action: str, text: str, df: pd.DataFrame, cols: Optional[List[str
                     results.append({"type": "plotly", "content": fig})
                     return results
 
-        # ---------------- Insights block ----------------
-        if action == "insights":
-            insights = []
-            
-            # ... (code to detect trends, seasonality, and anomalies) ...
-            trends = []
-            num_cols = [c for c in df.select_dtypes(include=[np.number]).columns if "id" not in c.lower()]
-            time_cols = [c for c in df.columns if "date" in c.lower() or "year" in c.lower() or "time" in c.lower()]
-            
-            if time_cols:
-                time_col = time_cols[0]
-                df_sorted = df.sort_values(by=time_col)
-                
-                for col in num_cols:
-                    trend = df_sorted[col].diff().mean()
-                    if trend > 0:
-                        trends.append(f"📈 **{col}** shows an increasing trend over {time_col}.")
-                    elif trend < 0:
-                        trends.append(f"📉 **{col}** shows a decreasing trend over {time_col}.")
-
-            anomalies = {}
-            for col in num_cols:
-                z_scores = np.abs((df[col] - df[col].mean()) / df[col].std())
-                outliers = df[z_scores > 3]
-                if not outliers.empty:
-                    anomalies[col] = len(outliers)
-            
-            # ... (code for segmentation and seasonality) ...
-            
             # ---------------- Dynamic Business/Practical Insights ----------------
             business_text = ["### 💡 Business / Practical Insights\n\n"]
 
@@ -747,7 +786,6 @@ with st.sidebar:
     show_index = st.checkbox('Show dataframe index in tables', value=False)
     st.caption('Developed by: Colin')
 
-
 # ---------------------- Main Chat ----------------------
 chat_col, right_col = st.columns([3, 1])
 
@@ -814,31 +852,102 @@ with chat_col:
 
     # Chat input always at the bottom
     user_input = st.chat_input("Ask me to analyze your data...")
-if user_input:
-    st.session_state["chat_started"] = True
-    st.session_state["chat_history"].append(
-        {"role": "user", "content": user_input}
-    )
-    
-    actions = detect_actions(user_input)
 
-    # Run all detected actions
-    results = []
-    for action in actions:
-        action_results = run_action(action, user_input, st.session_state["df"])
-        if isinstance(action_results, dict):
-            results.append(action_results)
-        elif isinstance(action_results, list):
-            results.extend(action_results)
+    # --- Predefined Queries (stick to input) ---
+    predefined_queries = {
+    1: "Dataset Summary",
+    2: "Data Quality Report",
+    3: "Preview Data f",
+    4: "Last Rows",
+    5: "Column Types",
+    6: "Row Count",
+    7: "Column Count",
+    8: "Column Means",
+    9: "Column Medians",
+    10: "Column Modes",
+    11: "Fill Missing Values",
+    12: "Drop Missing Values",
+    13: "Numeric Distribution",
+    14: "Correlation Heatmap",
+    15: "Target Relationships",
+    16: "Categorical Counts",
+    17: "Scatter Plots",
+    18: "Line Charts",
+    19: "Key Insights",
+    20: "Unique Counts",
+    21: "Feature Types",
+}
+    # --- MOVED and CORRECTED INDENTATION for Predefined Queries ---
+    if "remaining_queries" not in st.session_state:
+        st.session_state["remaining_queries"] = [1, 2, 3, 4]  
+    valid_remaining = [q for q in st.session_state["remaining_queries"] if q in predefined_queries]
+    st.session_state["remaining_queries"] = valid_remaining
 
-    # Append assistant results
-    for result in results:
+    st.markdown("<div class='suggestions'>", unsafe_allow_html=True)
+    cols = st.columns(len(st.session_state["remaining_queries"]))
+    for i, q in enumerate(st.session_state["remaining_queries"]):
+        label = predefined_queries.get(q)
+        if label:
+            if cols[i].button(label, key=f"predef-{q}"):
+                query_text = label
+                actions = detect_actions(query_text)
+                results = run_actions(actions, query_text, st.session_state["df"])
+
+                for result in results:
+                    st.session_state["chat_history"].append(
+                        {"role": "assistant", "type": result["type"], "content": result["content"]}
+                    )
+
+                st.session_state["remaining_queries"].remove(q)
+                next_q = max(st.session_state["remaining_queries"], default=0) + 1
+                if next_q in predefined_queries:
+                    st.session_state["remaining_queries"].append(next_q)
+
+                st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # --- MOVED and CORRECTED INDENTATION for CSS ---
+    st.markdown("""
+        <style>
+div[data-testid="stHorizontalBlock"] button {
+        background-color: #2d2f38;
+        color: white;
+        border-radius: 20px;
+        padding: 6px 16px;
+        border: none;
+        margin: 0 5px; /* Add spacing between buttons */
+    }
+div[data-testid="stHorizontalBlock"] button:hover {
+        background-color: #444654;
+        color: white;
+    }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # --- MOVED and CORRECTED INDENTATION for Handle manual input ---
+    if user_input:
+        st.session_state["chat_started"] = True
         st.session_state["chat_history"].append(
-            {"role": "assistant", "type": result["type"], "content": result["content"]}
+            {"role": "user", "content": user_input}
         )
-    
-    st.rerun()
 
+        actions = detect_actions(user_input)
+        results = []
+        for action in actions:
+            action_results = run_action(action, user_input, st.session_state["df"])
+            if isinstance(action_results, dict):
+                results.append(action_results)
+            elif isinstance(action_results, list):
+                results.extend(action_results)
+
+        for result in results:
+            st.session_state["chat_history"].append(
+                {"role": "assistant", "type": result["type"], "content": result["content"]}
+            )
+
+        st.rerun()
+
+# ---------------------- Right Column ----------------------
 with right_col:
     st.header('📊 Current dataset')
     if st.session_state['df'] is None:
