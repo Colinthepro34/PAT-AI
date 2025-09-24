@@ -405,7 +405,7 @@ def run_action(action: str, text: str, df: pd.DataFrame, cols: Optional[List[str
                 }
             })
 
-        elif action == "prediction":
+        if action == "prediction":
             # Check if we have time series data
             time_cols = []
             value_cols = []
@@ -630,6 +630,7 @@ def run_action(action: str, text: str, df: pd.DataFrame, cols: Optional[List[str
                     "data": prediction_summary
                 }
             })
+            return results
 
         if action == "hello":
             return [{"type": "text", "content": "Heyy!! How can I help you today? Upload the dataset and let's start the action!"}]
