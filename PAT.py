@@ -20,6 +20,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 import plotly.express as px
 from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+import matplotlib.dates as mdates
+import warnings
+warnings.filterwarnings('ignore')
 
 # ---------------------- Session State ----------------------
 if 'df' not in st.session_state:
@@ -29,6 +33,141 @@ if 'chat_history' not in st.session_state:
 if 'chat_started' not in st.session_state:
     st.session_state['chat_started'] = False
 
+# ---------------------- Churn Detection Class ----------------------
+class ChurnDetector:
+    def __init__(self):
+        self.models = {}
+        self.scaler = StandardScaler()
+        self.label_encoders = {}
+        self.feature_names = []
+        self.is_trained = False
+        
+    def analyze_data(self, df):
+        """Analyze the dataset for churn patterns"""
+        print("\n" + "="*50)
+        print("DATA ANALYSIS RESULTS")
+        print("="*50)
+        
+        # Basic statistics
+        print(f"Dataset shape: {df.shape}")
+        if 'churn' in df.columns:
+            print(f"Churn rate: {df['churn'].mean():.2%}")
+            print(f"Total churned customers: {df['churn'].sum()}")
+            print(f"Total retained customers: {(df['churn'] == 0).sum()}")
+        
+        # Missing values analysis
+        print("\nMissing Values Analysis:")
+        missing_data = df.isnull().sum()
+        if missing_data.sum() > 0:
+            print(missing_data[missing_data > 0])
+        else:
+            print("No missing values found")
+        
+        # Feature distributions
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        categorical_cols = df.select_dtypes(include=['object']).columns
+        
+        print(f"\nNumeric features: {len(numeric_cols)}")
+        print(f"Categorical features: {len(categorical_cols)}")
+        
+        return {
+            'shape': df.shape,
+            'churn_rate': df['churn'].mean() if 'churn' in df.columns else None,
+            'missing_values': missing_data,
+            'numeric_features': numeric_cols.tolist(),
+            'categorical_features': categorical_cols.tolist()
+        }
+    
+    def predict_churn(self, customer_data, use_rules=True):
+        """Predict churn using rule-based approach or loaded models"""
+        if use_rules:
+            return self.predict_churn_rules(customer_data)
+        else:
+            if not self.is_trained:
+                raise ValueError("Models not loaded yet. Please load models first or use rule-based prediction.")
+            
+            # This would be used with actual pretrained models
+            print("⚠️  Using placeholder prediction logic")
+            # Model prediction logic would go here
+            
+        return self.predict_churn_rules(customer_data)
+    
+    def predict_churn_rules(self, customer_data):
+        """Rule-based churn prediction"""
+        print("Using rule-based churn prediction...")
+        
+        # Initialize churn probability
+        churn_prob = np.full(len(customer_data), 0.15)  # base probability
+        
+        # Apply business rules to adjust probability
+        if 'contract_type' in customer_data.columns:
+            churn_prob += (customer_data['contract_type'] == 'Month-to-month') * 0.35
+            
+        if 'payment_method' in customer_data.columns:
+            churn_prob += (customer_data['payment_method'] == 'Electronic check') * 0.25
+            
+        if 'tenure' in customer_data.columns:
+            churn_prob += (customer_data['tenure'] < 12) * 0.40
+            churn_prob += ((customer_data['tenure'] >= 12) & (customer_data['tenure'] < 24)) * 0.20
+            
+        if 'monthly_charges' in customer_data.columns:
+            churn_prob += (customer_data['monthly_charges'] > 80) * 0.20
+            
+        if 'tech_support' in customer_data.columns:
+            churn_prob += (customer_data['tech_support'] == 'No') * 0.15
+            
+        if 'online_security' in customer_data.columns:
+            churn_prob += (customer_data['online_security'] == 'No') * 0.10
+            
+        if 'senior_citizen' in customer_data.columns:
+            churn_prob += (customer_data['senior_citizen'] == 1) * 0.15
+            
+        if 'internet_service' in customer_data.columns:
+            churn_prob += (customer_data['internet_service'] == 'Fiber optic') * 0.10
+        
+        # Cap probability at 1.0
+        churn_prob = np.minimum(churn_prob, 1.0)
+        
+        results = pd.DataFrame({
+            'customer_id': customer_data['customer_id'] if 'customer_id' in customer_data else range(len(customer_data)),
+            'churn_probability': churn_prob,
+            'risk_level': pd.cut(churn_prob, 
+                               bins=[0, 0.3, 0.7, 1.0], 
+                               labels=['Low', 'Medium', 'High'])
+        })
+        
+        return results
+    
+    def get_churn_insights(self, df):
+        """Generate business insights from churn analysis"""
+        if 'churn' not in df.columns:
+            print("No churn column found for insights generation")
+            return {}
+        
+        insights = {}
+        
+        # Contract type analysis
+        if 'contract_type' in df.columns:
+            contract_churn = df.groupby('contract_type')['churn'].agg(['count', 'sum', 'mean'])
+            contract_churn.columns = ['total_customers', 'churned_customers', 'churn_rate']
+            insights['contract_analysis'] = contract_churn
+        
+        # Tenure analysis
+        if 'tenure' in df.columns:
+            df['tenure_group'] = pd.cut(df['tenure'], 
+                                      bins=[0, 12, 24, 36, 72], 
+                                      labels=['0-12 months', '12-24 months', '24-36 months', '36+ months'])
+            tenure_churn = df.groupby('tenure_group')['churn'].agg(['count', 'sum', 'mean'])
+            tenure_churn.columns = ['total_customers', 'churned_customers', 'churn_rate']
+            insights['tenure_analysis'] = tenure_churn
+        
+        # Payment method analysis
+        if 'payment_method' in df.columns:
+            payment_churn = df.groupby('payment_method')['churn'].agg(['count', 'sum', 'mean'])
+            payment_churn.columns = ['total_customers', 'churned_customers', 'churn_rate']
+            insights['payment_analysis'] = payment_churn
+        
+        return insights
 
 # ---------------------- Prompt Parsing ----------------------
 ACTION_MAP = {
@@ -54,7 +193,10 @@ ACTION_MAP = {
     'target_relationships': ['target', 'relationship', 'relationship with target', 'analyze target'],
     'distribution': ['distribution', 'how is the data distributed'],
     'line': ['line', 'line chart', 'line plot', 'time series plot', 'plot over time'],
-    'insights': ['insights', 'key insights', 'summarize the data', 'what are the key takeaways', 'analyze the dataset and give me some insights', 'tell me about the dataset and its key features', 'I need a summary of the data quality and business insights']
+    'insights': ['insights', 'key insights', 'summarize the data', 'what are the key takeaways', 'analyze the dataset and give me some insights', 'tell me about the dataset and its key features', 'I need a summary of the data quality and business insights'],
+    'hello':['hello','how are you'],
+    'prediction':['future','prediction'],
+    'churn': ['churn', 'customer churn', 'churn analysis', 'churn prediction', 'predict churn', 'churn detection']
 }
 
 INVERSE_ACTION = {}
@@ -117,30 +259,6 @@ def safe_export_fig(fig, filename: str, fmt: str = "png", scale: int = 2):
         html_name = filename.replace(".png", ".html")
         return fig.to_html(full_html=False, include_plotlyjs="cdn").encode("utf-8"), html_name
 
-# ---------------------- Column extraction helper ----------------------
-def extract_column_names(text: str, df: pd.DataFrame) -> List[str]:
-    """Try to find explicit column names in text, or tokens after 'of'/'for'."""
-    if df is None:
-        return []
-    cols = list(df.columns.astype(str))
-    found = []
-    # exact column match (case-insensitive)
-    for col in cols:
-        pattern = re.compile(rf"\b{re.escape(col)}\b", flags=re.IGNORECASE)
-        if pattern.search(text):
-            found.append(col)
-    if found:
-        return list(dict.fromkeys(found))
-    # heuristic: tokens after "of" or "for"
-    m = re.findall(r"(?:of|for)\s+([A-Za-z0-9_\-]+)", text)
-    if m:
-        for token in m:
-            for col in cols:
-                if token.lower() == col.lower() or token.lower() in col.lower() or col.lower() in token.lower():
-                    found.append(col)
-    return list(dict.fromkeys(found))
-
-
 # ---------------------- Single action handler (always returns list of dicts) ----------------------
 def run_action(action: str, text: str, df: pd.DataFrame, cols: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     """
@@ -155,7 +273,366 @@ def run_action(action: str, text: str, df: pd.DataFrame, cols: Optional[List[str
     if cols is None:
         cols = extract_column_names(text, df)
 
-    try:
+    try: 
+        if action == "churn":
+            # Initialize churn detector
+            detector = ChurnDetector()
+            
+            # Check if we have required columns for churn analysis
+            required_cols = ['customer_id', 'tenure', 'monthly_charges', 'contract_type']
+            missing_cols = [col for col in required_cols if col not in df.columns]
+            
+            if missing_cols:
+                # If missing required columns, provide guidance
+                results.append({
+                    "type": "text", 
+                    "content": f"⚠️ Missing required columns for churn analysis: {missing_cols}\n\n"
+                              f"Available columns: {list(df.columns)}\n\n"
+                              f"For optimal churn analysis, your dataset should include:\n"
+                              f"- customer_id (unique identifier)\n"
+                              f"- tenure (months as customer)\n" 
+                              f"- monthly_charges (monthly fee)\n"
+                              f"- contract_type (Month-to-month, One year, Two year)\n"
+                              f"- payment_method (payment type)\n"
+                              f"- churn (target variable: 1 for churned, 0 for retained)\n\n"
+                              f"Will proceed with available data..."
+                })
+            
+            # Perform data analysis
+            analysis_results = detector.analyze_data(df)
+            
+            # Add analysis summary
+            analysis_text = f"📊 **Dataset Analysis Summary**\n\n"
+            analysis_text += f"• Dataset shape: {analysis_results['shape']}\n"
+            if analysis_results['churn_rate']:
+                analysis_text += f"• Churn rate: {analysis_results['churn_rate']:.2%}\n"
+            analysis_text += f"• Numeric features: {len(analysis_results['numeric_features'])}\n"
+            analysis_text += f"• Categorical features: {len(analysis_results['categorical_features'])}\n"
+            
+            if analysis_results['missing_values'].sum() > 0:
+                analysis_text += f"• Missing values detected in {(analysis_results['missing_values'] > 0).sum()} columns\n"
+            else:
+                analysis_text += f"• No missing values found\n"
+            
+            results.append({"type": "text", "content": analysis_text})
+            
+            # Generate business insights if churn column exists
+            if 'churn' in df.columns:
+                insights = detector.get_churn_insights(df)
+                
+                for insight_name, insight_data in insights.items():
+                    if not insight_data.empty:
+                        insight_title = insight_name.replace('_', ' ').title()
+                        results.append({
+                            "type": "table", 
+                            "content": {
+                                "title": f"📈 {insight_title}",
+                                "data": insight_data.round(3)
+                            }
+                        })
+            
+            # Predict churn for all customers using rule-based approach
+            predictions = detector.predict_churn(df, use_rules=True)
+            
+            # Add prediction summary
+            risk_summary = predictions['risk_level'].value_counts()
+            summary_text = f"🎯 **Churn Risk Assessment**\n\n"
+            
+            for level in ['High', 'Medium', 'Low']:
+                if level in risk_summary.index:
+                    count = risk_summary[level]
+                    pct = (count / len(predictions)) * 100
+                    if level == 'High':
+                        summary_text += f"🔴 **{level} Risk**: {count} customers ({pct:.1f}%) - Immediate action needed\n"
+                    elif level == 'Medium':
+                        summary_text += f"🟡 **{level} Risk**: {count} customers ({pct:.1f}%) - Monitor closely\n"
+                    else:
+                        summary_text += f"🟢 **{level} Risk**: {count} customers ({pct:.1f}%) - Stable customers\n"
+            
+            results.append({"type": "text", "content": summary_text})
+            
+            # Show top high-risk customers
+            high_risk = predictions[predictions['risk_level'] == 'High'].head(10)
+            if len(high_risk) > 0:
+                # Merge with original data to show customer details
+                detailed_high_risk = high_risk.merge(df, on='customer_id', how='left')
+                
+                # Select relevant columns for display
+                display_cols = ['customer_id', 'churn_probability', 'risk_level']
+                for col in ['tenure', 'monthly_charges', 'contract_type', 'payment_method']:
+                    if col in detailed_high_risk.columns:
+                        display_cols.append(col)
+                
+                results.append({
+                    "type": "table",
+                    "content": {
+                        "title": "🚨 Top 10 High-Risk Customers",
+                        "data": detailed_high_risk[display_cols].round(3)
+                    }
+                })
+            
+            # Business recommendations
+            recommendations = f"💡 **Recommended Actions**\n\n"
+            
+            if 'High' in risk_summary.index and risk_summary['High'] > 0:
+                recommendations += f"**For {risk_summary['High']} High-Risk Customers:**\n"
+                recommendations += f"• Immediate personal outreach within 48 hours\n"
+                recommendations += f"• Offer retention incentives (discounts, upgrades)\n"
+                recommendations += f"• Schedule customer satisfaction calls\n"
+                recommendations += f"• Consider contract upgrade offers\n\n"
+            
+            if 'Medium' in risk_summary.index and risk_summary['Medium'] > 0:
+                recommendations += f"**For {risk_summary['Medium']} Medium-Risk Customers:**\n"
+                recommendations += f"• Proactive engagement via email/SMS\n"
+                recommendations += f"• Enroll in loyalty programs\n" 
+                recommendations += f"• Conduct service quality surveys\n"
+                recommendations += f"• Monitor usage patterns\n\n"
+            
+            recommendations += f"**General Strategy:**\n"
+            recommendations += f"• Focus on month-to-month contract customers\n"
+            recommendations += f"• Improve payment experience (reduce electronic check friction)\n"
+            recommendations += f"• Enhance customer support for new customers (tenure < 12 months)\n"
+            recommendations += f"• Review pricing strategy for high monthly charges\n"
+            
+            results.append({"type": "text", "content": recommendations})
+            
+            # Return full predictions as downloadable data
+            results.append({
+                "type": "download",
+                "content": {
+                    "filename": "churn_predictions.csv",
+                    "data": predictions.merge(df, on='customer_id', how='left')
+                }
+            })
+
+        elif action == "prediction":
+            # Check if we have time series data
+            time_cols = []
+            value_cols = []
+            
+            # Look for time columns
+            for col in df.columns:
+                if df[col].dtype == 'datetime64[ns]' or 'date' in col.lower() or 'time' in col.lower():
+                    time_cols.append(col)
+                elif df[col].dtype in ['float64', 'int64'] and col.lower() not in ['id', 'customer_id']:
+                    value_cols.append(col)
+            
+            if not time_cols:
+                # Try to convert columns that might be dates
+                for col in df.columns:
+                    try:
+                        df[col] = pd.to_datetime(df[col])
+                        time_cols.append(col)
+                        break
+                    except:
+                        continue
+            
+            if not time_cols or not value_cols:
+                results.append({
+                    "type": "text", 
+                    "content": "⚠️ Time series prediction requires:\n"
+                              "- A date/time column\n"
+                              "- A numeric value column (e.g., Close, Price, Sales)\n\n"
+                              f"Available columns: {list(df.columns)}\n"
+                              "Please ensure your data has proper date and numeric columns."
+                })
+                return results
+            
+            # Use first available time and value columns
+            TIME_COL = time_cols[0]
+            VALUE_COL = value_cols[0]
+            
+            # Parameters
+            MA_SHORT = 10
+            MA_LONG = 20
+            RSI_WINDOW = 14
+            BB_WINDOW = 20
+            BB_STD = 2
+            ROC_PERIOD = 10
+            FLAT_THRESHOLD = 0.33
+
+            # Prepare data
+            df_pred = df.copy()
+            df_pred[TIME_COL] = pd.to_datetime(df_pred[TIME_COL])
+            df_pred = df_pred.sort_values(TIME_COL).reset_index(drop=True)
+            price_col = VALUE_COL
+
+            # 1. MOVING AVERAGES (TREND)
+            df_pred['MA_short'] = df_pred[price_col].rolling(MA_SHORT, min_periods=1).mean()
+            df_pred['MA_long'] = df_pred[price_col].rolling(MA_LONG, min_periods=1).mean()
+            df_pred['MA_signal'] = np.where(df_pred['MA_short'] > df_pred['MA_long'], 1,
+                                          np.where(df_pred['MA_short'] < df_pred['MA_long'], -1, 0))
+
+            # 2. RSI (MOMENTUM)
+            df_pred['change'] = df_pred[price_col].diff()
+            df_pred['gain'] = df_pred['change'].where(df_pred['change'] > 0, 0)
+            df_pred['loss'] = -df_pred['change'].where(df_pred['change'] < 0, 0)
+            df_pred['avg_gain'] = df_pred['gain'].rolling(RSI_WINDOW, min_periods=1).mean()
+            df_pred['avg_loss'] = df_pred['loss'].rolling(RSI_WINDOW, min_periods=1).mean()
+            df_pred['RS'] = df_pred['avg_gain'] / df_pred['avg_loss'].replace(0, np.nan)
+            df_pred['RSI'] = 100 - (100 / (1 + df_pred['RS']))
+            df_pred['RSI'] = df_pred['RSI'].fillna(50)  # Fill NaN with neutral RSI
+            df_pred['RSI_signal'] = np.where(df_pred['RSI'] < 30, 1,
+                                           np.where(df_pred['RSI'] > 70, -1, 0))
+
+            # 3. BOLLINGER BANDS (VOLATILITY)
+            df_pred['BB_middle'] = df_pred[price_col].rolling(BB_WINDOW, min_periods=1).mean()
+            df_pred['BB_std'] = df_pred[price_col].rolling(BB_WINDOW, min_periods=1).std()
+            df_pred['BB_upper'] = df_pred['BB_middle'] + (BB_STD * df_pred['BB_std'])
+            df_pred['BB_lower'] = df_pred['BB_middle'] - (BB_STD * df_pred['BB_std'])
+
+            df_pred['BB_signal'] = 0
+            df_pred.loc[df_pred[price_col] >= df_pred['BB_upper'] * 0.98, 'BB_signal'] = -1
+            df_pred.loc[df_pred[price_col] <= df_pred['BB_lower'] * 1.02, 'BB_signal'] = 1
+
+            # 4. SUPPORT & RESISTANCE — FIBONACCI LEVELS
+            absolute_high = df_pred[price_col].max()
+            absolute_low = df_pred[price_col].min()
+            price_range = absolute_high - absolute_low
+
+            FIB_RATIOS = {'0.000': 0.000, '0.382': 0.382, '0.618': 0.618, '1.000': 1.000}
+            fib_levels = {label: absolute_low + ratio * price_range for label, ratio in FIB_RATIOS.items()}
+
+            support_prices = [fib_levels['0.000'], fib_levels['0.382'], fib_levels['0.618']]
+            resistance_prices = [fib_levels['0.382'], fib_levels['0.618'], fib_levels['1.000']]
+
+            def get_nearest_support(price, supports):
+                candidates = [s for s in supports if s <= price]
+                return max(candidates) if candidates else min(supports)
+
+            def get_nearest_resistance(price, resistances):
+                candidates = [r for r in resistances if r >= price]
+                return min(candidates) if candidates else max(resistances)
+
+            df_pred['nearest_support'] = df_pred[price_col].apply(lambda p: get_nearest_support(p, support_prices))
+            df_pred['nearest_resistance'] = df_pred[price_col].apply(lambda p: get_nearest_resistance(p, resistance_prices))
+            df_pred['zone_range'] = df_pred['nearest_resistance'] - df_pred['nearest_support']
+            df_pred['distance_to_support'] = df_pred[price_col] - df_pred['nearest_support']
+            df_pred['distance_to_resistance'] = df_pred['nearest_resistance'] - df_pred[price_col]
+            df_pred['pct_to_support'] = df_pred['distance_to_support'] / df_pred['zone_range']
+            df_pred['pct_to_resistance'] = df_pred['distance_to_resistance'] / df_pred['zone_range']
+            df_pred['SR_signal'] = 0
+            df_pred.loc[df_pred['pct_to_support'] <= 0.30, 'SR_signal'] = 1
+            df_pred.loc[df_pred['pct_to_resistance'] <= 0.30, 'SR_signal'] = -1
+
+            # 5. MOMENTUM (ROC)
+            df_pred['ROC'] = ((df_pred[price_col] / df_pred[price_col].shift(ROC_PERIOD)) - 1) * 100
+            df_pred['ROC'] = df_pred['ROC'].fillna(0)  # Fill NaN with 0
+            df_pred['MOM_signal'] = np.where(df_pred['ROC'] > 2, 1,
+                                           np.where(df_pred['ROC'] < -2, -1, 0))
+
+            # 6. FINAL PREDICTION
+            weights = {'MA': 1.5, 'RSI': 1.0, 'BB': 1.2, 'MOM': 1.0, 'SR': 2.0}
+            MAX_SIGNAL = sum(weights.values())
+
+            df_pred['total_signal'] = (
+                df_pred['MA_signal'] * weights['MA'] +
+                df_pred['RSI_signal'] * weights['RSI'] +
+                df_pred['BB_signal'] * weights['BB'] +
+                df_pred['MOM_signal'] * weights['MOM'] +
+                df_pred['SR_signal'] * weights['SR']
+            )
+            df_pred['normalized_signal'] = df_pred['total_signal'] / MAX_SIGNAL
+            df_pred['prediction'] = 'SIDEWAYS'
+            df_pred.loc[df_pred['normalized_signal'] > FLAT_THRESHOLD, 'prediction'] = 'UP'
+            df_pred.loc[df_pred['normalized_signal'] < -FLAT_THRESHOLD, 'prediction'] = 'DOWN'
+            df_pred['conviction_score'] = (df_pred['normalized_signal'].abs() * 100).clip(upper=85)
+
+            # PLOTTING
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 10), gridspec_kw={'height_ratios': [3, 1]}, sharex=True)
+            
+            # Price plot with indicators
+            ax1.plot(df_pred[TIME_COL], df_pred[price_col], label=f'{VALUE_COL} Price', color='black', linewidth=1.8, zorder=3)
+            ax1.plot(df_pred[TIME_COL], df_pred['BB_upper'], label='BB Upper', color='blue', linestyle='--', alpha=0.7)
+            ax1.plot(df_pred[TIME_COL], df_pred['BB_middle'], label='BB Middle (MA20)', color='grey', linestyle='-', alpha=0.7)
+            ax1.plot(df_pred[TIME_COL], df_pred['BB_lower'], label='BB Lower', color='blue', linestyle='--', alpha=0.7)
+            ax1.fill_between(df_pred[TIME_COL], df_pred['BB_lower'], df_pred['BB_upper'], color='blue', alpha=0.08)
+            ax1.plot(df_pred[TIME_COL], df_pred['MA_short'], label=f'MA {MA_SHORT}', color='orange', linewidth=1.5)
+            ax1.plot(df_pred[TIME_COL], df_pred['MA_long'], label=f'MA {MA_LONG}', color='red', linewidth=1.5)
+            
+            # Support and resistance levels
+            support_levels = [('Fib 0.000', fib_levels['0.000'], 'darkgreen'),
+                              ('Fib 0.382', fib_levels['0.382'], 'green'),
+                              ('Fib 0.618', fib_levels['0.618'], 'lightgreen')]
+            resistance_levels = [('Fib 0.618', fib_levels['0.618'], 'orangered'),
+                                 ('Fib 1.000', fib_levels['1.000'], 'darkred')]
+            
+            for label, level, color in support_levels:
+                ax1.axhline(y=level, color=color, linestyle='-', linewidth=2, alpha=0.85, label=label)
+            for label, level, color in resistance_levels:
+                ax1.axhline(y=level, color=color, linestyle='-', linewidth=2, alpha=0.85, label=label)
+
+            # Prediction markers
+            up_mask = df_pred['prediction'] == 'UP'
+            down_mask = df_pred['prediction'] == 'DOWN'
+            ax1.scatter(df_pred[TIME_COL][up_mask], df_pred[price_col][up_mask],
+                        marker='^', color='green', s=100, edgecolors='black', linewidth=0.5, label='Predicted UP', zorder=5)
+            ax1.scatter(df_pred[TIME_COL][down_mask], df_pred[price_col][down_mask],
+                        marker='v', color='red', s=100, edgecolors='black', linewidth=0.5, label='Predicted DOWN', zorder=5)
+
+            ax1.set_title(f'Technical Analysis - {VALUE_COL} Prediction', fontsize=14, fontweight='bold')
+            ax1.set_ylabel(f'{VALUE_COL}', fontsize=12)
+            ax1.legend(loc='upper center', fontsize=9, ncol=2)
+            ax1.grid(True, alpha=0.3)
+
+            # RSI subplot
+            ax2.plot(df_pred[TIME_COL], df_pred['RSI'], label='RSI', color='purple', linewidth=1.5)
+            ax2.axhline(70, color='red', linestyle='--', alpha=0.6, label='Overbought (70)')
+            ax2.axhline(30, color='green', linestyle='--', alpha=0.6, label='Oversold (30)')
+            ax2.axhline(50, color='grey', linestyle='-', alpha=0.5)
+            ax2.set_ylabel('RSI', fontsize=12)
+            ax2.set_xlabel('Date', fontsize=12)
+            ax2.legend(loc='upper left', fontsize=9)
+            ax2.grid(True, alpha=0.3)
+            
+            # Format dates
+            fig.autofmt_xdate()
+            ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+            ax1.xaxis.set_major_locator(mdates.AutoDateLocator())
+            plt.tight_layout()
+
+            # Get latest prediction
+            last_idx = len(df_pred) - 1
+            last_pred = df_pred.iloc[last_idx]['prediction']
+            last_conviction = df_pred.iloc[last_idx]['conviction_score']
+            last_norm_sig = df_pred.iloc[last_idx]['normalized_signal']
+            last_support = df_pred.iloc[last_idx]['nearest_support']
+            last_resistance = df_pred.iloc[last_idx]['nearest_resistance']
+            last_rsi = df_pred.iloc[last_idx]['RSI']
+
+            breakdown_text = f"📈 **TECHNICAL ANALYSIS PREDICTION**\n\n"
+            breakdown_text += f"**Final Prediction: {last_pred}**\n"
+            breakdown_text += f"Conviction Score: {last_conviction:.1f}%\n"
+            breakdown_text += f"Normalized Signal: {last_norm_sig:+.3f}\n\n"
+            
+            breakdown_text += f"**Key Levels:**\n"
+            breakdown_text += f"• Nearest Support: {last_support:.2f}\n"
+            breakdown_text += f"• Nearest Resistance: {last_resistance:.2f}\n"
+            breakdown_text += f"• Current RSI: {last_rsi:.1f}\n\n"
+            
+            breakdown_text += f"**Signal Breakdown:**\n"
+            breakdown_text += f"• MA Signal (×1.5): {df_pred.iloc[last_idx]['MA_signal'] * weights['MA']:+.1f}\n"
+            breakdown_text += f"• RSI Signal (×1.0): {df_pred.iloc[last_idx]['RSI_signal'] * weights['RSI']:+.1f}\n"
+            breakdown_text += f"• BB Signal (×1.2): {df_pred.iloc[last_idx]['BB_signal'] * weights['BB']:+.1f}\n"
+            breakdown_text += f"• Momentum Signal (×1.0): {df_pred.iloc[last_idx]['MOM_signal'] * weights['MOM']:+.1f}\n"
+            breakdown_text += f"• S/R Signal (×2.0): {df_pred.iloc[last_idx]['SR_signal'] * weights['SR']:+.1f}\n"
+            breakdown_text += f"• **Total Signal: {df_pred.iloc[last_idx]['total_signal']:.2f} / {MAX_SIGNAL}**"
+
+            results.append({"type": "matplotlib", "content": fig})
+            results.append({"type": "text", "content": breakdown_text})
+            
+            # Add prediction data as download
+            prediction_summary = df_pred[[TIME_COL, VALUE_COL, 'prediction', 'conviction_score', 'RSI', 'MA_short', 'MA_long']].tail(20)
+            results.append({
+                "type": "download",
+                "content": {
+                    "filename": "technical_analysis_predictions.csv",
+                    "data": prediction_summary
+                }
+            })
+
+        if action == "hello":
+            return [{"type": "text", "content": "Heyy!! How can I help you today? Upload the dataset and let's start the action!"}]
         # ---------------- Dataset Info ----------------
         if action == "rows":
             results.append({"type": "text", "content": f"The dataset has **{df.shape[0]} rows**."})
@@ -853,29 +1330,22 @@ with chat_col:
     # Chat input always at the bottom
     user_input = st.chat_input("Ask me to analyze your data...")
 
-    # --- Predefined Queries (stick to input) ---
+    # --- Predefined Queries---
     predefined_queries = {
     1: "Dataset Summary",
     2: "Data Quality Report",
-    3: "Preview Data f",
+    3: "First Rows",
     4: "Last Rows",
     5: "Column Types",
-    6: "Row Count",
-    7: "Column Count",
-    8: "Column Means",
-    9: "Column Medians",
-    10: "Column Modes",
-    11: "Fill Missing Values",
-    12: "Drop Missing Values",
+    6: "Statistical Analysis",
     13: "Numeric Distribution",
     14: "Correlation Heatmap",
     15: "Target Relationships",
-    16: "Categorical Counts",
     17: "Scatter Plots",
     18: "Line Charts",
     19: "Key Insights",
-    20: "Unique Counts",
-    21: "Feature Types",
+    20: "Prediction of Dataset",
+    21: "Churn Detection",
 }
     # --- MOVED and CORRECTED INDENTATION for Predefined Queries ---
     if "remaining_queries" not in st.session_state:
