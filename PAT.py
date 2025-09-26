@@ -196,7 +196,7 @@ ACTION_MAP = {
     'line': ['line', 'line chart', 'line plot', 'time series plot', 'plot over time'],
     'insights': ['insights', 'key insights', 'summarize the data', 'what are the key takeaways', 'analyze the dataset and give me some insights', 'tell me about the dataset and its key features', 'I need a summary of the data quality and business insights'],
     'hello':['hello','how are you','Heyy!'],
-    'prediction':['future','prediction'],
+    'prediction':['predict','future','prediction'],
     'churn': ['churn', 'customer churn', 'churn analysis', 'churn prediction', 'predict churn', 'churn detection']
 }
 
