@@ -8,9 +8,3 @@ typing
 python-dotenv
 xlrd
 openpyxl
-math
-zipfile
-re
-io
-os
-warnings
