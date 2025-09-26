@@ -1,0 +1,16 @@
+plotly
+pandas
+numpy
+streamlit
+scikit-learn
+matplotlib
+typing
+python-dotenv
+xlrd
+openpyxl
+math
+zipfile
+re
+io
+os
+warnings
