@@ -171,10 +171,10 @@ class ChurnDetector:
 
 # ---------------------- Prompt Parsing ----------------------
 ACTION_MAP = {
-    'mean': ['mean', 'average', 'avg', 'What is the average of'],
-    'median': ['median', 'midpoint', 'middle value'],
+    'mean': ['mean', 'average', 'avg', 'What is the average of','Statistical Analysis'],
+    'median': ['median', 'midpoint', 'middle value','Statistical Analysis'],
     'mode': ['mode', 'most frequent', 'common value'],
-    'describe': ['describe', 'summary', 'summary statistics', 'dataset summary', 'tell me about the data'],
+    'describe': ['describe', 'summary', 'summary statistics', 'dataset summary', 'tell me about the data','Statistical Analysis'],
     'head': ['head', 'show head', 'show first', 'first rows', 'top rows', 'first few rows', 'preview the data'],
     'tail': ['tail', 'last rows', 'bottom rows', 'last few rows'],
     'dropna': ['dropna', 'drop na', 'drop missing', 'remove missing', 'remove rows with missing values'],
@@ -182,19 +182,20 @@ ACTION_MAP = {
     'histogram': ['histogram', 'hist', 'distribution', 'numerical distribution', 'distribution of numerical variables'],
     'barchart': ['bar chart', 'bar', 'frequency counts', 'frequency counts for categorical variables'],
     'heatmap': ['heatmap', 'correlation heatmap', 'correlation between numerical variables'],
+    'pie':['pie'],
     'scatter': ['scatter', 'scatter plot', 'relationship between numerical variables'],
     'count': ['count', 'value counts'],
     'corr': ['correlation', 'corr', 'correlations', 'correlation matrix'],
-    'rows': ['rows','row', 'number of rows', 'row count', 'how many rows','How many rows are in the dataset'],
-    'columns': ['columns','column', 'number of columns', 'col count', 'how many columns'],
-    'dtypes': ['datatypes','datatype', 'dtypes', 'types', 'column types', 'what are the data types'],
+    'rows': ['rows','row', 'number of rows', 'row count', 'how many rows','How many rows are in the dataset','give me the structure of the dataset'],
+    'columns': ['columns','column', 'number of columns', 'col count', 'how many columns','give me the structure of the dataset'],
+    'dtypes': ['datatypes','datatype', 'dtypes', 'types', 'column types', 'what are the data types','structure'],
     'data_quality': ['data quality', 'check quality', 'missing values', 'duplicates', 'outliers', 'clean data', 'check for missing values'],
     'feature_types': ['categorical', 'numerical', 'feature types', 'what are the feature types'],
-    'target_relationships': ['target', 'relationship', 'relationship with target', 'analyze target'],
+    'target_relationships': ['target', 'relationship with target', 'analyze target'],
     'distribution': ['distribution', 'how is the data distributed'],
     'line': ['line', 'line chart', 'line plot', 'time series plot', 'plot over time'],
     'insights': ['insights', 'key insights', 'summarize the data', 'what are the key takeaways', 'analyze the dataset and give me some insights', 'tell me about the dataset and its key features', 'I need a summary of the data quality and business insights'],
-    'hello':['hello','how are you'],
+    'hello':['hello','how are you','Heyy!'],
     'prediction':['future','prediction'],
     'churn': ['churn', 'customer churn', 'churn analysis', 'churn prediction', 'predict churn', 'churn detection']
 }
@@ -287,15 +288,15 @@ def run_action(action: str, text: str, df: pd.DataFrame, cols: Optional[List[str
                 results.append({
                     "type": "text", 
                     "content": f"⚠️ Missing required columns for churn analysis: {missing_cols}\n\n"
-                              f"Available columns: {list(df.columns)}\n\n"
-                              f"For optimal churn analysis, your dataset should include:\n"
-                              f"- customer_id (unique identifier)\n"
-                              f"- tenure (months as customer)\n" 
-                              f"- monthly_charges (monthly fee)\n"
-                              f"- contract_type (Month-to-month, One year, Two year)\n"
-                              f"- payment_method (payment type)\n"
-                              f"- churn (target variable: 1 for churned, 0 for retained)\n\n"
-                              f"Will proceed with available data..."
+                                 f"Available columns: {list(df.columns)}\n\n"
+                                 f"For optimal churn analysis, your dataset should include:\n"
+                                 f"- customer_id (unique identifier)\n"
+                                 f"- tenure (months as customer)\n" 
+                                 f"- monthly_charges (monthly fee)\n"
+                                 f"- contract_type (Month-to-month, One year, Two year)\n"
+                                 f"- payment_method (payment type)\n"
+                                 f"- churn (target variable: 1 for churned, 0 for retained)\n\n"
+                                 f"Will proceed with available data..."
                 })
             
             # Perform data analysis
@@ -404,8 +405,35 @@ def run_action(action: str, text: str, df: pd.DataFrame, cols: Optional[List[str
                     "data": predictions.merge(df, on='customer_id', how='left')
                 }
             })
+            return results
 
         if action == "prediction":
+            # Ensure Date column is parsed as datetime
+            if "Date" in df.columns:
+                df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+
+            # Pick default time and value columns if auto-detect fails
+            time_cols = [col for col in df.columns if df[col].dtype == "datetime64[ns]"]
+            value_cols = [col for col in df.columns if df[col].dtype in ["float64", "int64"]]
+
+            # Override defaults if still missing
+            if not time_cols and "Date" in df.columns:
+                time_cols = ["Date"]
+
+            if not value_cols:
+                if "close" in df.columns:
+                    value_cols = ["close"]
+                elif "ltp" in df.columns:
+                    value_cols = ["ltp"]
+                elif "OPEN" in df.columns:
+                    value_cols = ["OPEN"]
+
+            # Use first available
+            if time_cols:
+                 TIME_COL = time_cols[0]
+            if value_cols:
+                 VALUE_COL = value_cols[0]
+
             # Check if we have time series data
             time_cols = []
             value_cols = []
@@ -431,14 +459,14 @@ def run_action(action: str, text: str, df: pd.DataFrame, cols: Optional[List[str
                 results.append({
                     "type": "text", 
                     "content": "⚠️ Time series prediction requires:\n"
-                              "- A date/time column\n"
-                              "- A numeric value column (e.g., Close, Price, Sales)\n\n"
-                              f"Available columns: {list(df.columns)}\n"
-                              "Please ensure your data has proper date and numeric columns."
+                                 "- A date/time column\n"
+                                 "- A numeric value column (e.g., Close, Price, Sales)\n\n"
+                                 f"Available columns: {list(df.columns)}\n"
+                                 "Please ensure your data has proper date and numeric columns."
                 })
                 return results
             
-            # Use first available time and value columns
+            # Use first available time and value columns (Re-defining for safety and clarity)
             TIME_COL = time_cols[0]
             VALUE_COL = value_cols[0]
             
@@ -461,7 +489,7 @@ def run_action(action: str, text: str, df: pd.DataFrame, cols: Optional[List[str
             df_pred['MA_short'] = df_pred[price_col].rolling(MA_SHORT, min_periods=1).mean()
             df_pred['MA_long'] = df_pred[price_col].rolling(MA_LONG, min_periods=1).mean()
             df_pred['MA_signal'] = np.where(df_pred['MA_short'] > df_pred['MA_long'], 1,
-                                          np.where(df_pred['MA_short'] < df_pred['MA_long'], -1, 0))
+                                         np.where(df_pred['MA_short'] < df_pred['MA_long'], -1, 0))
 
             # 2. RSI (MOMENTUM)
             df_pred['change'] = df_pred[price_col].diff()
@@ -473,7 +501,7 @@ def run_action(action: str, text: str, df: pd.DataFrame, cols: Optional[List[str
             df_pred['RSI'] = 100 - (100 / (1 + df_pred['RS']))
             df_pred['RSI'] = df_pred['RSI'].fillna(50)  # Fill NaN with neutral RSI
             df_pred['RSI_signal'] = np.where(df_pred['RSI'] < 30, 1,
-                                           np.where(df_pred['RSI'] > 70, -1, 0))
+                                            np.where(df_pred['RSI'] > 70, -1, 0))
 
             # 3. BOLLINGER BANDS (VOLATILITY)
             df_pred['BB_middle'] = df_pred[price_col].rolling(BB_WINDOW, min_periods=1).mean()
@@ -519,7 +547,7 @@ def run_action(action: str, text: str, df: pd.DataFrame, cols: Optional[List[str
             df_pred['ROC'] = ((df_pred[price_col] / df_pred[price_col].shift(ROC_PERIOD)) - 1) * 100
             df_pred['ROC'] = df_pred['ROC'].fillna(0)  # Fill NaN with 0
             df_pred['MOM_signal'] = np.where(df_pred['ROC'] > 2, 1,
-                                           np.where(df_pred['ROC'] < -2, -1, 0))
+                                            np.where(df_pred['ROC'] < -2, -1, 0))
 
             # 6. FINAL PREDICTION
             weights = {'MA': 1.5, 'RSI': 1.0, 'BB': 1.2, 'MOM': 1.0, 'SR': 2.0}
@@ -635,11 +663,11 @@ def run_action(action: str, text: str, df: pd.DataFrame, cols: Optional[List[str
         if action == "hello":
             return [{"type": "text", "content": "Heyy!! How can I help you today? Upload the dataset and let's start the action!"}]
         # ---------------- Dataset Info ----------------
-        if action == "rows":
+        if action in ("structure", "rows"):
             results.append({"type": "text", "content": f"The dataset has **{df.shape[0]} rows**."})
             return results
 
-        if action == "columns":
+        if action in ("structure", "columns"):
             results.append({"type": "text", "content": f"The dataset has **{df.shape[1]} columns**."})
             return results
 
@@ -975,7 +1003,7 @@ def run_action(action: str, text: str, df: pd.DataFrame, cols: Optional[List[str
             return results
 
         # ---------------- Generic plotting block (histogram/bar/line/scatter/heatmap multi) ----------------
-        if action in ("histogram", "bar", "line", "scatter", "heatmap"):
+        if action in ("histogram", "bar", "line", "scatter", "heatmap","pie"):
             figs = []
             numeric_cols = [c for c in df.select_dtypes(include=[np.number]).columns if "id" not in c.lower()]
             target_cols = cols if cols else numeric_cols
@@ -1054,6 +1082,19 @@ def run_action(action: str, text: str, df: pd.DataFrame, cols: Optional[List[str
                     fig = px.bar(counts, x=col, y="count", title=f"Bar Chart: {col}")
                     fig.update_traces(marker=dict(line=dict(width=1, color="black")))
                     results.append({"type": "plotly", "content": fig})
+                    return results
+            elif action == "pie":
+                cat_cols = df.select_dtypes(exclude=[np.number]).columns
+                if not cat_cols.any():
+                    results.append({"type": "text", "content": "No categorical columns available for pie chart."})
+                    return results
+                else:
+                    for col in cat_cols:
+                        counts = df[col].value_counts().reset_index()
+                        counts.columns = [col, "count"]
+                        fig = px.pie(counts, names=col, values="count", title=f"Pie Chart: {col}")
+                        fig.update_traces(textinfo="percent+label", pull=[0.05]*len(counts))
+                        results.append({"type": "plotly", "content": fig})
                     return results
 
             # ---------------- Dynamic Business/Practical Insights ----------------
@@ -1246,6 +1287,8 @@ button[title="Send"] {
 
 # ---------------------- Sidebar ----------------------
 with st.sidebar:
+    st.header('PAT.ai')
+    st.caption('Perform | Analyze | Transform')
     st.header('📂 Upload data')
     uploaded = st.file_uploader('Upload CSV or Excel', type=['csv', 'xlsx', 'xls'])
     if uploaded is not None:
@@ -1259,10 +1302,7 @@ with st.sidebar:
         except Exception as e:
             st.error(f'Could not load file: {e}')
 
-    st.markdown('---')
-    st.header('⚙️ Settings')
-    show_index = st.checkbox('Show dataframe index in tables', value=False)
-    st.caption('Developed by: Colin')
+    st.caption('Developed by: Colin, Nisarg, Dona')
 
 # ---------------------- Main Chat ----------------------
 chat_col, right_col = st.columns([3, 1])
@@ -1283,7 +1323,7 @@ with chat_col:
                     elif msg['type'] == 'table':
                         st.dataframe(msg['content'])
                     elif msg['type'] == 'plotly':
-                        st.plotly_chart(msg['content'], use_container_width=True)
+                        st.plotly_chart(msg['content'], use_container_width=True, key=f"plotly_{id(msg)}")
                     elif msg['type'] == 'matplotlib':
                         st.pyplot(msg['content'])
                     elif msg['type'] == 'data_quality':
@@ -1333,24 +1373,22 @@ with chat_col:
 
     # --- Predefined Queries---
     predefined_queries = {
-    1: "Dataset Summary",
-    2: "Data Quality Report",
-    3: "First Rows",
-    4: "Last Rows",
-    5: "Column Types",
-    6: "Statistical Analysis",
-    13: "Numeric Distribution",
-    14: "Correlation Heatmap",
-    15: "Target Relationships",
-    17: "Scatter Plots",
-    18: "Line Charts",
-    19: "Key Insights",
-    20: "Prediction of Dataset",
-    21: "Churn Detection",
+    1: "Summary of the dataset",
+    2: "Want a Data Quality Report?",
+    3: "what are the feature types?",
+    4: "Numeric Distribution of dataset",
+    5: "The Target Relationships of dataset",
+    6: "Want a Pie chart?",
+    7: "Relationship between numerical variables?",
+    8: "Explore Correlation Heatmap?",
+    9: "Lets analyze the Key Insights",
+    10: "Lets Predict the Dataset",
+    11: "Lets detect a churn from dataset",
+    12: "Heyy!"
 }
     # --- MOVED and CORRECTED INDENTATION for Predefined Queries ---
     if "remaining_queries" not in st.session_state:
-        st.session_state["remaining_queries"] = [1, 2, 3, 4]  
+        st.session_state["remaining_queries"] = [1, 2, 3]  
     valid_remaining = [q for q in st.session_state["remaining_queries"] if q in predefined_queries]
     st.session_state["remaining_queries"] = valid_remaining
 
