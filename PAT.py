@@ -1311,7 +1311,7 @@ with chat_col:
     if not st.session_state["chat_started"]:
         st.markdown("## 👋 Hi, I'm **PAT**, your Data Analyst.")
         st.markdown("I can refine your data, analyze it, and create visuals.")
-        st.image("/workspaces/PAT-AI/Made with insMind-IMG_20250915_063635 (1).png", width=600)
+        st.image("Made with insMind-IMG_20250915_063635 (1).png", width=600)
     else:
         for msg in st.session_state['chat_history']:
             if msg['role'] == 'user':
